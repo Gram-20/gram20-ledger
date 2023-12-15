@@ -199,7 +199,6 @@ class Gram20LedgerUpdater:
         state = await get_last_state(conn, sender, action.tick)
         amount = int(action.obj['amt'])
         memo = str(action.obj.get('memo', ''))
-        # token_info = await get_gram20_token(conn, minter)
 
         if amount > state.balance:
             logger.warning("Transfer is not possible due to low balance")
@@ -242,8 +241,36 @@ class Gram20LedgerUpdater:
         )
         await conn.execute(insert(Gram20Ledger, [new_state_sender, new_state_recipient]))
 
-    async def check_premints(self, conn):
-        logger.error("no premints checks implemented so far")
+    async def check_premints(self, conn, seqno, block_ts):
+        for token in get_gram20_tokens_for_premint_check(conn):
+            allowed = False
+            if token.unlock_type == Gram20Token.UNLOCK_TYPE_FULL:
+                if token.supply >= token.max_supply:
+                    logger.info(f"max supply reached for {token.tick}, preminting {token.premint}")
+                    allowed = True
+            elif token.unlock_type == Gram20Token.UNLOCK_TYPE_TIMESTAMP:
+                if block_ts >= token.unlock:
+                    logger.info(f"premint unlock time reached for {token.tick}, preminting {token.premint}")
+                    allowed = True
+            if allowed:
+                recipient_state = await get_last_state(conn, token.owner, token.tick)
+
+                new_state_recipient = Gram20Ledger(
+                    prev_state=recipient_state.id,
+                    msg_id=token.msg_id,
+                    hash=token.hash, # the same as for deploy
+                    seqno=seqno,
+                    lt=token.lt, # there are no lt for this action, so just use from token deploy
+                    utime=block_ts,
+                    owner=token.owner,
+                    tick=token.tick,
+                    balance=recipient_state.balance + token.premint,
+                    delta=token.premint,
+                    action=Gram20Ledger.ACTION_TYPE_PREMINT
+                )
+                await conn.execute(insert(Gram20Ledger, [new_state_recipient]))
+                await conn.execute(update(Gram20Token).where(Gram20Token.id == token.id).values(preminted=True))
+
 
     async def deploy_token(self, conn, action: Gram20Action):
         acc_state = await get_account_info(conn, action.destination)
@@ -271,12 +298,13 @@ class Gram20LedgerUpdater:
         obj = action.obj
         if obj['lock_type'] == 'unlock':
             if obj['unlock'] == 'full':
-                lock_type = 'unlock_full'
+                lock_type = Gram20Token.UNLOCK_TYPE_FULL
             else:
-                lock_type = 'unlock_ts'
+                lock_type = Gram20Token.UNLOCK_TYPE_TIMESTAMP
                 unlock_ts = int(obj['unlock'])
         token = Gram20Token(
             msg_id=action.msg.msg_id,
+            hash=action.msg.hash,
             address=action.destination,
             data=acc_state.data,
             created_lt=action.msg.lt,
@@ -291,7 +319,8 @@ class Gram20LedgerUpdater:
             unlock=unlock_ts,
             mint_start=int(obj['start']),
             interval=int(obj['interval']),
-            penalty=int(obj['penalty'])
+            penalty=int(obj['penalty']),
+            preminted=lock_type != 'none'
         )
         logger.info(f"Saving new token {token}")
         await conn.execute(self.gram20_token_t.insert(), [token])

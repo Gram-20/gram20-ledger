@@ -49,6 +49,12 @@ async def get_gram20_token(session, address):
     res = (await session.execute(select(Gram20Token).filter(Gram20Token.address == address))).first()
     return res
 
+async def get_gram20_tokens_for_premint_check(session):
+    res = await session.execute(select(Gram20Token)
+                                 .filter(Gram20Token.premint > 0)
+                                 .filter(Gram20Token.preminted == False))
+    return res.all()
+
 
 async def get_last_state(session, address, tick):
     res = (await session.execute(select(Gram20Ledger)
@@ -63,3 +69,4 @@ async def get_last_state(session, address, tick):
             tick=tick,
             balance=0
         )
+    return res
