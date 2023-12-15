@@ -5,6 +5,7 @@ import os
 import base64
 
 from loguru import logger
+from tonsdk.utils import Address
 
 from indexer.crud import get_messages_by_masterchain_seqno
 from indexer.database import init_database, engine
@@ -22,6 +23,7 @@ class Gram20Action:
     lt: int
     utime: int
     obj: dict
+    tick: str
     msg: Message
 
 
@@ -40,7 +42,7 @@ VALID_BASIC_WALLETS = set([
     "/rX/aCDi/w2Ug+fg1iyBfYRniftK5YDIeIZtlZ2r1cA="
 ])
 
-class Gram20Ledger:
+class Gram20LedgerUpdater:
     def __init__(self, executor_url):
         self.executor_url = executor_url
 
@@ -52,7 +54,7 @@ class Gram20Ledger:
         async with engine.begin() as conn:
             self.user_code = await get_code(conn, GRAM20_USER_CODE_HASH)
             self.master_code = await get_code(conn, GRAM20_MASTER)
-            self.master_data = (await get_account_info(conn, GRAM20_MASTER)).data
+            # self.master_data = (await get_account_info(conn, GRAM20_MASTER)).data
             self.token_master_code = await get_code(conn, GRAM20_TOKEN_MASTER_CODE_HASH)
 
     async def _execute(self, code, data, method, types, address=None, arguments=[]):
@@ -72,65 +74,176 @@ class Gram20Ledger:
 
     async def start_processing(self):
         logger.info("Starting ledger processing!")
-        try:
-            async with engine.begin() as conn:
-                last_seqno = await get_last_seqno(conn)
-                logger.info(f"Got last processed seqno: {last_seqno}")
-                messages = await get_messages_by_masterchain_seqno(conn, last_seqno + 1)
-                all_actions = []
-                for msg in messages:
-                    if msg.comment and msg.comment.startswith(GRAM20_PREFIX):
-                        try:
-                            obj = json.loads(msg.comment[len("data:application/json,"):])
-                            if obj['p'] != 'gram-20':
-                                continue
-                            op = obj['op']
-                            is_valid = False
-                            if op == 'deploy' and msg.source == GRAM20_MASTER:
-                                is_valid = True
-                            elif op == 'mint':
-                                is_valid = await self.validate_mint(conn, msg)
-                            elif op == 'transfer':
-                                is_valid = await self.validate_transfer(conn, msg)
+        while True:
+            try:
+                await self.processig_iteration()
+                await asyncio.sleep(4)
+            except Exception as e:
+                logger.error(f"Failed to process ledger iteration: {e} {traceback.format_exc()}")
 
-                            if is_valid:
-                                all_actions.append(Gram20Action(
-                                    source=msg.source,
-                                    destination=msg.destination,
-                                    lt=msg.lt,
-                                    utime=msg.utime,
-                                    obj=obj,
-                                    op=op,
-                                    msg=msg
-                                ))
-                        except Exception as p_e:
-                            logger.error(f"Failed to parse message {msg.hash} {p_e} {traceback.format_exc()}")
-                logger.info(f"Got {len(all_actions)} actions to process")
+    async def processig_iteration(self):
+        async with engine.begin() as conn:
+            last_seqno = await get_last_seqno(conn)
+            logger.info(f"Got last processed seqno: {last_seqno}")
+            assert last_seqno is not None
+            current_seqno = last_seqno + 1
+            current_block_time = get_mc_block_time(current_seqno)
+            if current_block_time is None:
+                logger.info(f"MC block {current_seqno} is not found")
+                return
+            messages = await get_messages_by_masterchain_seqno(conn, current_seqno)
+            all_actions = []
+            for msg in messages:
+                if msg.comment and msg.comment.startswith(GRAM20_PREFIX):
+                    try:
+                        obj = json.loads(msg.comment[len("data:application/json,"):])
+                        if obj['p'] != 'gram-20':
+                            continue
+                        op = obj['op']
+                        is_valid = False
+                        if op == 'deploy' and msg.source == GRAM20_MASTER:
+                            is_valid = True
+                        elif op == 'mint':
+                            is_valid = await self.validate_mint(conn, msg)
+                        elif op == 'transfer':
+                            is_valid = await self.validate_transfer(conn, msg)
 
-                inserted_actions = 0
-                # process deploy actions
-                for action in all_actions:
-                    if action.op == 'deploy':
-                        if await self.deploy_token(conn, action):
-                            inserted_actions += 1
-                # next sort all actions:
-                all_actions = sorted(all_actions, key=lambda action: (action.lt, int.from_bytes(base64.b64decode(action.msg.hash))) )
-                for action in all_actions:
-                    logger.info(f"Applying action {action}")
-                    if action.op == 'mint':
-                        if await self.apply_mint(conn, action):
-                            inserted_actions +=1
-                    elif action.op == 'transfer':
-                        if await self.apply_transfer(conn, action):
-                            inserted_actions += 1
+                        if is_valid:
+                            all_actions.append(Gram20Action(
+                                source=msg.source,
+                                destination=msg.destination,
+                                lt=msg.lt,
+                                utime=msg.utime,
+                                obj=obj,
+                                op=op,
+                                msg=msg,
+                                tick=obj.get('tick', None)
+                            ))
+                    except Exception as p_e:
+                        logger.error(f"Failed to parse message {msg.hash} {p_e} {traceback.format_exc()}")
+            logger.info(f"Got {len(all_actions)} actions to process")
 
-                await self.check_premints()
-                await update_processing_history(conn, last_seqno, last_seqno + 1, inserted_actions)
+            inserted_actions = 0
+            # process deploy actions
+            for action in all_actions:
+                if action.op == 'deploy':
+                    if await self.deploy_token(conn, action):
+                        inserted_actions += 1
+            # next sort all actions:
+            all_actions = sorted(all_actions, key=lambda action: (action.lt, int.from_bytes(base64.b64decode(action.msg.hash))) )
+            self.supply_updates = {}
+            for action in all_actions:
+                logger.info(f"Applying action {action}")
+                if action.op == 'mint':
+                    if await self.apply_mint(conn, action, current_seqno):
+                        inserted_actions +=1
+                elif action.op == 'transfer':
+                    if await self.apply_transfer(conn, action, current_seqno):
+                        inserted_actions += 1
+            await self.update_supply_history(conn, current_seqno)
 
-                await conn.commit() # finally commit all this stuff
+            await self.check_premints(conn)
+            await update_processing_history(conn, current_seqno, current_block_time, inserted_actions)
 
-        except Exception as e:
-            logger.error(f"Failed to process ledger iteration: {e} {traceback.format_exc()}")
+            await conn.commit() # finally commit all this stuff
+
+    async def update_supply_history(self, conn, seqno):
+        if len(self.supply_updates) > 0:
+            updates = []
+            for tick, supply in self.supply_updates:
+                updates.append({
+                    'tick': tick,
+                    'seqno': seqno,
+                    'supply': supply
+                })
+            await conn.execute(insert(Gram20SupplyHistory).values(updates))
+
+    async def apply_mint(self, conn, action, seqno):
+        assert action.op == 'mint'
+        minter = action.source
+        state = await get_last_state(conn, minter, action.tick)
+        amount = int(action.obj['amt'])
+        token_info = await get_gram20_token(conn, minter)
+        assert token_info is not None # not possible actually
+        if amount > token_info.mint_limit:
+            logger.warning(f"Mint attempt over limit ({amount} over {token_info.mint_limit} by {minter} for {action.tick}")
+            return False
+        allowed_to_mint = token_info.max_supply - token_info.supply
+        if allowed_to_mint <= 0: # only eq zero, negative is not possible but who knows...
+            # TODO - may be store empty mints items to the ledger?
+            logger.warning("Mint is not possible for")
+            return False
+        amount = min(allowed_to_mint, amount) # avoid overmint
+        # prev state
+        new_state = Gram20Ledger(
+            prev_state=state.id,
+            msg_id=action.msg.msg_id,
+            hash=action.msg.hash,
+            seqno=seqno,
+            lt=action.lt,
+            utime=action.utime,
+            owner=minter,
+            tick=action.tick,
+            balance=state.balance + amount,
+            delta=amount,
+            action=Gram20Ledger.ACTION_TYPE_MINT
+        )
+        await conn.execute(insert(Gram20Ledger, [new_state]))
+        token_info.supply += amount
+        await conn.execute(update(Gram20Token).where(Gram20Token.id == token_info.id).values(supply=token_info.supply))
+        self.supply_updates[action.token] = token_info.supply # track supply per seqno for further actions
+
+    async def apply_transfer(self, conn, action, seqno):
+        assert action.op == 'transfer'
+        sender = action.source
+        state = await get_last_state(conn, sender, action.tick)
+        amount = int(action.obj['amt'])
+        memo = str(action.obj.get('memo', ''))
+        # token_info = await get_gram20_token(conn, minter)
+
+        if amount > state.balance:
+            logger.warning("Transfer is not possible due to low balance")
+            return False
+
+        recipient = Address(action.obj['to']).to_string(1, 1, 1)
+
+        new_state_sender = Gram20Ledger(
+            prev_state=state.id,
+            msg_id=action.msg.msg_id,
+            hash=action.msg.hash,
+            seqno=seqno,
+            lt=action.lt,
+            utime=action.utime,
+            owner=sender,
+            tick=action.tick,
+            balance=state.balance - amount,
+            delta=-1 * amount,
+            action=Gram20Ledger.ACTION_TYPE_TRANSFER,
+            comment=memo,
+            peer=recipient
+        )
+
+        recipient_state = await get_last_state(conn, recipient, action.tick)
+
+        new_state_recipient = Gram20Ledger(
+            prev_state=recipient_state.id,
+            msg_id=action.msg.msg_id,
+            hash=action.msg.hash,
+            seqno=seqno,
+            lt=action.lt,
+            utime=action.utime,
+            owner=recipient,
+            tick=action.tick,
+            balance=recipient_state.balance + amount,
+            delta=amount,
+            action=Gram20Ledger.ACTION_TYPE_TRANSFER,
+            comment=memo,
+            peer=sender
+        )
+        await conn.execute(insert(Gram20Ledger, [new_state_sender, new_state_recipient]))
+
+    async def check_premints(self, conn):
+        logger.error("no premints checks implemented so far")
 
     async def deploy_token(self, conn, action: Gram20Action):
         acc_state = await get_account_info(conn, action.destination)
@@ -140,7 +253,7 @@ class Gram20Ledger:
             # TODO logging errors
             logger.warning(f"Unable to deploy Gram20 token master with code hash {acc_state.code_hash}")
             return False
-        tick = action.obj['tick']
+        tick = action.tick
         if not tick or len(tick) != 4:
             logger.warning(f"Unable to deploy Gram20 token for tick {tick}")
             return False
@@ -243,5 +356,5 @@ class Gram20Ledger:
         await self.start_processing()
 
 if __name__ == "__main__":
-    ledger = Gram20Ledger(executor_url=os.getenv("EXECUTOR_URL", "http://localhost:9090"))
+    ledger = Gram20LedgerUpdater(executor_url=os.getenv("EXECUTOR_URL", "http://localhost:9090"))
     asyncio.run(ledger.run())
