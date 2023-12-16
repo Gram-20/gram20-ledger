@@ -5,7 +5,8 @@ import os
 import base64
 
 from loguru import logger
-from tonsdk.utils import Address
+from tonsdk.utils import Address, bytes_to_b64str
+from tonsdk.boc import Cell
 
 from indexer.crud import get_messages_by_masterchain_seqno
 from indexer.database import init_database, engine
@@ -25,12 +26,14 @@ class Gram20Action:
     obj: dict
     tick: str
     msg: Message
+    op: str
 
 
 GRAM20_PREFIX = """data:application/json,"""
-GRAM20_MASTER = "EQ????"
-GRAM20_TOKEN_MASTER_CODE_HASH = "xxx"
-GRAM20_USER_CODE_HASH = "xxx"
+GRAM20_MASTER = "EQDvNr9zjQ1nptP0ON3_dPbMLNOoQWSWT4cjr-nl-yIgwEkN"
+GRAM20_TOKEN_MASTER_CODE_HASH = "AvzC2WZxNMP0iFeZukQE8yYxgznho0HJdPo1IPFPlCE="
+GRAM20_USER_CODE_HASH = "T27PUT+H3P0Vh3rblkXwyXmfLfwxylEwBZuq2UWRdY8="
+
 VALID_BASIC_WALLETS = set([
     "1JAvzJ+tdGmPqONTIgpo2g3PcuMryy657gQhfBfTBiw=",
     "WHzHie/xyE9G7DeX5F/ICaFP9a4k8eDHpqmcydyQYf8=",
@@ -52,10 +55,19 @@ class Gram20LedgerUpdater:
         self.gram20_wallets_t = meta.tables[Gram20Wallet.__tablename__]
         self.gram20_token_t = meta.tables[Gram20Token.__tablename__]
         async with engine.begin() as conn:
+            logger.info("Initializing smart contracts codes")
+            master_state = await get_account_info(conn, GRAM20_MASTER)
+            self.master_data = master_state.data
+            assert self.master_data is not None
+            
             self.user_code = await get_code(conn, GRAM20_USER_CODE_HASH)
-            self.master_code = await get_code(conn, GRAM20_MASTER)
-            # self.master_data = (await get_account_info(conn, GRAM20_MASTER)).data
+            assert self.user_code is not None
+            self.master_code = await get_code(conn, master_state.code_hash)
+            assert self.master_code is not None
+
             self.token_master_code = await get_code(conn, GRAM20_TOKEN_MASTER_CODE_HASH)
+            assert self.token_master_code is not None
+            logger.info("Smart contract codes have been initialized")
 
     async def _execute(self, code, data, method, types, address=None, arguments=[]):
         req = {'code': code, 'data': data, 'method': method,
@@ -87,10 +99,11 @@ class Gram20LedgerUpdater:
             logger.info(f"Got last processed seqno: {last_seqno}")
             assert last_seqno is not None
             current_seqno = last_seqno + 1
-            current_block_time = get_mc_block_time(current_seqno)
+            current_block_time = await get_mc_block_time(conn, current_seqno)
             if current_block_time is None:
                 logger.info(f"MC block {current_seqno} is not found")
                 return
+            logger.info(f"got block {current_seqno}, generated at {int(time() - current_block_time)} s ago")
             messages = await get_messages_by_masterchain_seqno(conn, current_seqno)
             all_actions = []
             for msg in messages:
@@ -127,10 +140,10 @@ class Gram20LedgerUpdater:
             # process deploy actions
             for action in all_actions:
                 if action.op == 'deploy':
-                    if await self.deploy_token(conn, action):
+                    if await self.deploy_token(conn, action, current_seqno):
                         inserted_actions += 1
             # next sort all actions:
-            all_actions = sorted(all_actions, key=lambda action: (action.lt, int.from_bytes(base64.b64decode(action.msg.hash))) )
+            all_actions = sorted(all_actions, key=lambda action: (action.lt, int.from_bytes(base64.b64decode(action.msg.hash), byteorder='big')) )
             self.supply_updates = {}
             for action in all_actions:
                 logger.info(f"Applying action {action}")
@@ -142,7 +155,7 @@ class Gram20LedgerUpdater:
                         inserted_actions += 1
             await self.update_supply_history(conn, current_seqno)
 
-            await self.check_premints(conn)
+            await self.check_premints(conn, current_seqno, current_block_time)
             await update_processing_history(conn, current_seqno, current_block_time, inserted_actions)
 
             await conn.commit() # finally commit all this stuff
@@ -159,6 +172,8 @@ class Gram20LedgerUpdater:
             await conn.execute(insert(Gram20SupplyHistory).values(updates))
 
     async def apply_mint(self, conn, action, seqno):
+        raise
+        # TODO check mint start time
         assert action.op == 'mint'
         minter = action.source
         state = await get_last_state(conn, minter, action.tick)
@@ -188,7 +203,7 @@ class Gram20LedgerUpdater:
             delta=amount,
             action=Gram20Ledger.ACTION_TYPE_MINT
         )
-        await conn.execute(insert(Gram20Ledger, [new_state]))
+        await conn.execute(insert(Gram20Ledger, [new_state.as_dict()]))
         token_info.supply += amount
         await conn.execute(update(Gram20Token).where(Gram20Token.id == token_info.id).values(supply=token_info.supply))
         self.supply_updates[action.token] = token_info.supply # track supply per seqno for further actions
@@ -239,12 +254,12 @@ class Gram20LedgerUpdater:
             comment=memo,
             peer=sender
         )
-        await conn.execute(insert(Gram20Ledger, [new_state_sender, new_state_recipient]))
+        await conn.execute(insert(Gram20Ledger, [new_state_sender.as_dict(), new_state_recipient.as_dict()]))
 
     async def check_premints(self, conn, seqno, block_ts):
-        for token in get_gram20_tokens_for_premint_check(conn):
+        for token in (await get_gram20_tokens_for_premint_check(conn)):
             allowed = False
-            if token.unlock_type == Gram20Token.UNLOCK_TYPE_FULL:
+            if token.lock_type == Gram20Token.UNLOCK_TYPE_FULL:
                 if token.supply >= token.max_supply:
                     logger.info(f"max supply reached for {token.tick}, preminting {token.premint}")
                     allowed = True
@@ -268,11 +283,11 @@ class Gram20LedgerUpdater:
                     delta=token.premint,
                     action=Gram20Ledger.ACTION_TYPE_PREMINT
                 )
-                await conn.execute(insert(Gram20Ledger, [new_state_recipient]))
+                await conn.execute(insert(Gram20Ledger, [new_state_recipient.as_dict()]))
                 await conn.execute(update(Gram20Token).where(Gram20Token.id == token.id).values(preminted=True))
 
 
-    async def deploy_token(self, conn, action: Gram20Action):
+    async def deploy_token(self, conn, action: Gram20Action, seqno):
         acc_state = await get_account_info(conn, action.destination)
         if acc_state is None or not acc_state.data or not acc_state.code_hash:
             raise Exception(f"Unable to get account state for token master {action}")
@@ -284,14 +299,25 @@ class Gram20LedgerUpdater:
         if not tick or len(tick) != 4:
             logger.warning(f"Unable to deploy Gram20 token for tick {tick}")
             return False
-        real_token_master = await self._execute(code=self.master_code, data=self.master_data,
-                                                method='get_master_address', types=['address'], arguments=[tick])
+        tick_cell = Cell()
+        tick_cell.bits.write_string(tick)
+        logger.info(bytes_to_b64str(tick_cell.to_boc(False)))
+        real_token_master, = await self._execute(code=self.master_code, data=self.master_data,
+                                                method='calculate_root_address', types=['address'],
+                                                address=GRAM20_MASTER,
+                                                arguments=[bytes_to_b64str(tick_cell.to_boc(False))])
         if real_token_master != action.destination:
             logger.warning(f"Wrong token master address: {action.destination}, but for tick {tick} it should be {real_token_master}")
             return False
 
-        token_owner, tick = await self._execute(code=self.token_master_code, data=acc_state.data,
-                                                method='get_info', types=['address', 'string'], arguments=[])
+        is_inited, = await self._execute(code=self.token_master_code, data=acc_state.data,
+                                         address=action.destination,
+                                                method='get_root_data', types=['int'], arguments=[])
+        
+        assert is_inited == '-1', f"Token {action.destination} is not inited: {is_inited}" # must be always, but who knows..
+
+        _, _, _, token_owner = await self._execute(code=self.token_master_code, data=acc_state.data,
+                                                method='get_token_data', types=['int', 'int', 'int', 'address'], arguments=[])
 
         lock_type = 'none'
         unlock_ts = None
@@ -312,7 +338,7 @@ class Gram20LedgerUpdater:
             owner=token_owner,
             tick=tick,
             max_supply=int(obj['max']),
-            supply=0,
+            supply=int(obj['premint']),
             mint_limit=int(obj['limit']),
             premint=int(obj['premint']),
             lock_type=lock_type,
@@ -320,13 +346,22 @@ class Gram20LedgerUpdater:
             mint_start=int(obj['start']),
             interval=int(obj['interval']),
             penalty=int(obj['penalty']),
-            preminted=lock_type != 'none'
+            preminted=lock_type == 'none'
         )
         logger.info(f"Saving new token {token}")
-        await conn.execute(self.gram20_token_t.insert(), [token])
+        await conn.execute(self.gram20_token_t.insert(), [token.as_dict()])
+
+        await conn.execute(insert(Gram20SupplyHistory).values({
+            'tick': tick,
+            'seqno': seqno,
+            'supply': int(obj['premint'])
+        }))
+
+
         return True
 
     async def validate_mint(self, conn, msg):
+        raise
         return await self.validate_action(conn, msg, validate_wallet_type=True)
 
     async def validate_transfer(self, conn, msg):
@@ -369,7 +404,7 @@ class Gram20LedgerUpdater:
                 address=wallet_address,
                 owner=owner_address,
                 tick=gram20_token.tick
-            )])
+            ).as_dict()])
             if owner_address != msg['source']:
                 logger.warning(f"Owner address for {wallet_address} is {owner_address}, but mint has been sent from {msg['source']}")
                 return False
@@ -385,5 +420,5 @@ class Gram20LedgerUpdater:
         await self.start_processing()
 
 if __name__ == "__main__":
-    ledger = Gram20LedgerUpdater(executor_url=os.getenv("EXECUTOR_URL", "http://localhost:9090"))
+    ledger = Gram20LedgerUpdater(executor_url=os.getenv("EXECUTOR_URL", "http://localhost:9090/execute"))
     asyncio.run(ledger.run())

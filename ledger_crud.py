@@ -3,7 +3,7 @@ from sqlalchemy.future import select
 from sqlalchemy import insert, update
 from sqlalchemy.orm import contains_eager
 from indexer.database import *
-from datetime import datetime
+from time import time
 
 async def get_last_seqno(session):
     res = (await session.execute(select(Gram20ProcessingHistory)
@@ -13,16 +13,16 @@ async def get_last_seqno(session):
     return None
 
 async def get_mc_block_time(session, seqno):
-    last_block = await (session.execute(select(BlockHeader.gen_utime) \
+    last_block = (await (session.execute(select(BlockHeader) \
                                         .join(BlockHeader.block).options(contains_eager(BlockHeader.block)) \
-                                        .filter(Block.workchain == -1).filter(Block.seqno == seqno))).first()
+                                        .filter(Block.workchain == -1).filter(Block.seqno == seqno)))).first()
     if last_block is None:
         return None
     else:
         return last_block.gen_utime
 
 async def update_processing_history(session, new_seqno, last_mc_time, actions):
-    processed = int(datetime.now())
+    processed = int(time())
 
     await session.execute(insert(Gram20ProcessingHistory).values(
         seqno=new_seqno,
@@ -38,6 +38,8 @@ async def get_account_info(session, address):
 
 async def get_code(session, code_hash):
     res = (await session.execute(select(Code.code).filter(Code.hash == code_hash))).first()
+    if res is not None:
+        return res.code
     return res
 
 
