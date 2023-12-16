@@ -88,8 +88,8 @@ class Gram20LedgerUpdater:
         logger.info("Starting ledger processing!")
         while True:
             try:
-                await self.processig_iteration()
-                await asyncio.sleep(4)
+                if await self.processig_iteration() < 100:
+                    await asyncio.sleep(4)
             except Exception as e:
                 logger.error(f"Failed to process ledger iteration: {e} {traceback.format_exc()}")
 
@@ -159,6 +159,7 @@ class Gram20LedgerUpdater:
             await update_processing_history(conn, current_seqno, current_block_time, inserted_actions)
 
             await conn.commit() # finally commit all this stuff
+            return time() - current_block_time
 
     async def update_supply_history(self, conn, seqno):
         if len(self.supply_updates) > 0:
