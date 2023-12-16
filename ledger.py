@@ -35,7 +35,7 @@ GRAM20_TOKEN_MASTER_CODE_HASH = "AvzC2WZxNMP0iFeZukQE8yYxgznho0HJdPo1IPFPlCE="
 GRAM20_USER_CODE_HASH = "T27PUT+H3P0Vh3rblkXwyXmfLfwxylEwBZuq2UWRdY8="
 
 VALID_BASIC_WALLETS = set([
-    "1JAvzJ+tdGmPqONTIgpo2g3PcuMryy657gQhfBfTBiw=",
+    "1JAvzJ+tdGmPqmonoONTIgpo2g3PcuMryy657gQhfBfTBiw=",
     "WHzHie/xyE9G7DeX5F/ICaFP9a4k8eDHpqmcydyQYf8=",
     "XJpeaMEI4YchoHxC+ZVr+zmtd+xtYktgxXbsiO7mUyk=",
     "/pUw0yQ4Uwg+8u8LTCkIwKv2+hwx6iQ6rKpb+MfXU/E=",
@@ -102,7 +102,7 @@ class Gram20LedgerUpdater:
             current_block_time = await get_mc_block_time(conn, current_seqno)
             if current_block_time is None:
                 logger.info(f"MC block {current_seqno} is not found")
-                return
+                return 0
             logger.info(f"got block {current_seqno}, generated at {int(time() - current_block_time)} s ago")
             messages = await get_messages_by_masterchain_seqno(conn, current_seqno)
             all_actions = []
