@@ -51,6 +51,10 @@ async def get_gram20_token(session, address):
     res = (await session.execute(select(Gram20Token).filter(Gram20Token.address == address))).first()
     return res
 
+async def get_gram20_token_by_tick(session, tick):
+    res = (await session.execute(select(Gram20Token).filter(Gram20Token.tick == tick))).first()
+    return res
+
 async def get_gram20_tokens_for_premint_check(session):
     res = await session.execute(select(Gram20Token)
                                  .filter(Gram20Token.premint > 0)

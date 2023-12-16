@@ -30,9 +30,13 @@ class Gram20Action:
 
 
 GRAM20_PREFIX = """data:application/json,"""
-GRAM20_MASTER = "EQDvNr9zjQ1nptP0ON3_dPbMLNOoQWSWT4cjr-nl-yIgwEkN"
+GRAM20_MASTER = "EQDuqo1QXVJ1q0mR2GhDg7WwTJKLm_sb8axE8KRMQFZk7e6x"
 GRAM20_TOKEN_MASTER_CODE_HASH = "AvzC2WZxNMP0iFeZukQE8yYxgznho0HJdPo1IPFPlCE="
-GRAM20_USER_CODE_HASH = "T27PUT+H3P0Vh3rblkXwyXmfLfwxylEwBZuq2UWRdY8="
+GRAM20_USER_CODE_HASH = "rf/CaeBl3BPXRaouTSsCADuZ3yNQ8+elTziKIqt0k2I="
+
+class ExecutorException(Exception):
+    def __init__(self, msg):
+        self.message = msg
 
 VALID_BASIC_WALLETS = set([
     "1JAvzJ+tdGmPqmonoONTIgpo2g3PcuMryy657gQhfBfTBiw=",
@@ -77,11 +81,11 @@ class Gram20LedgerUpdater:
         async with aiohttp.ClientSession() as session:
             resp = await session.post(self.executor_url, json=req)
             async with resp:
-                assert resp.status == 200, "Error during contract executor call: %s" % resp
+                if resp.status != 200:
+                    raise ExecutorException("Error during contract executor call: %s" % resp)
                 res = await resp.json()
                 if res['exit_code'] != 0:
-                    logger.warning("Non-zero exit code: %s" % res)
-                    return None
+                    raise ExecutorException("Non-zero exit code: %s" % res)
                 return res['result']
 
     async def start_processing(self):
@@ -132,8 +136,10 @@ class Gram20LedgerUpdater:
                                 msg=msg,
                                 tick=obj.get('tick', None)
                             ))
+                    except ExecutorException as e_e:
+                        raise e_e
                     except Exception as p_e:
-                        logger.error(f"Failed to parse message {msg.hash} {p_e} {traceback.format_exc()}")
+                            logger.error(f"Failed to parse message {msg.hash} {p_e} {traceback.format_exc()}")
             logger.info(f"Got {len(all_actions)} actions to process")
 
             inserted_actions = 0
@@ -148,7 +154,7 @@ class Gram20LedgerUpdater:
             for action in all_actions:
                 logger.info(f"Applying action {action}")
                 if action.op == 'mint':
-                    if await self.apply_mint(conn, action, current_seqno):
+                    if await self.apply_mint(conn, action, current_seqno, current_block_time):
                         inserted_actions +=1
                 elif action.op == 'transfer':
                     if await self.apply_transfer(conn, action, current_seqno):
@@ -164,7 +170,7 @@ class Gram20LedgerUpdater:
     async def update_supply_history(self, conn, seqno):
         if len(self.supply_updates) > 0:
             updates = []
-            for tick, supply in self.supply_updates:
+            for tick, supply in self.supply_updates.items():
                 updates.append({
                     'tick': tick,
                     'seqno': seqno,
@@ -172,15 +178,16 @@ class Gram20LedgerUpdater:
                 })
             await conn.execute(insert(Gram20SupplyHistory).values(updates))
 
-    async def apply_mint(self, conn, action, seqno):
-        raise
-        # TODO check mint start time
+    async def apply_mint(self, conn, action, seqno, block_time):
         assert action.op == 'mint'
         minter = action.source
         state = await get_last_state(conn, minter, action.tick)
         amount = int(action.obj['amt'])
-        token_info = await get_gram20_token(conn, minter)
+        token_info = await get_gram20_token_by_tick(conn, action.tick)
         assert token_info is not None # not possible actually
+        if token_info.mint_start > block_time:
+            logger.warning(f"Mint is not started for {token_info.tick}, blocked {minter}")
+            return False
         if amount > token_info.mint_limit:
             logger.warning(f"Mint attempt over limit ({amount} over {token_info.mint_limit} by {minter} for {action.tick}")
             return False
@@ -205,9 +212,9 @@ class Gram20LedgerUpdater:
             action=Gram20Ledger.ACTION_TYPE_MINT
         )
         await conn.execute(insert(Gram20Ledger, [new_state.as_dict()]))
-        token_info.supply += amount
-        await conn.execute(update(Gram20Token).where(Gram20Token.id == token_info.id).values(supply=token_info.supply))
-        self.supply_updates[action.token] = token_info.supply # track supply per seqno for further actions
+        new_supply = token_info.supply + amount
+        await conn.execute(update(Gram20Token).where(Gram20Token.id == token_info.id).values(supply=new_supply))
+        self.supply_updates[action.tick] = new_supply # track supply per seqno for further actions
 
     async def apply_transfer(self, conn, action, seqno):
         assert action.op == 'transfer'
@@ -358,11 +365,9 @@ class Gram20LedgerUpdater:
             'supply': int(obj['premint'])
         }))
 
-
         return True
 
     async def validate_mint(self, conn, msg):
-        raise
         return await self.validate_action(conn, msg, validate_wallet_type=True)
 
     async def validate_transfer(self, conn, msg):
@@ -391,13 +396,18 @@ class Gram20LedgerUpdater:
             if dst_acc.code_hash != GRAM20_USER_CODE_HASH:
                 logger.warning(f"Gram20 mint {msg['hash']} has been sent to wrong contract with code hash {dst_acc.code_hash}")
                 return False
-            root_address, owner_address = await self._execute(code=get_code(dst_acc.code_hash), data=dst_acc.data, method='get_info', types=['address', 'address'])
-            gram20_token = await get_gram20_token(root_address)
+            root_address, owner_address, _, _, _, _ = await self._execute(code=self.user_code,
+                                                              data=dst_acc.data,
+                                                              address=wallet_address,
+                                                              method='get_user_data',
+                                                              types=['address', 'address', 'int', 'int', 'int', 'int'])
+            gram20_token = await get_gram20_token(conn, root_address)
             if gram20_token is None:
                 logger.warning(f"Gram20 token {root_address} is not deployed yet!")
                 return False
 
-            real_wallet_address = await self._execute(code=self.token_master_code, data=gram20_token.data, method='get_wallet_address', types=['address', 'address'], arguments=[owner_address])
+            _, real_wallet_address = await self._execute(code=self.token_master_code, address=root_address,
+                                                      data=gram20_token.data, method='get_user_data', types=['address', 'address'], arguments=[owner_address])
             if real_wallet_address != wallet_address:
                 logger.warning(f"Address calculated by {root_address} is {real_wallet_address}, but smart contract address is {msg['destination']}")
                 return False
