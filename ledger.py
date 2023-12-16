@@ -420,8 +420,8 @@ class Gram20LedgerUpdater:
                 logger.warning(f"Owner address for {wallet_address} is {owner_address}, but mint has been sent from {msg['source']}")
                 return False
         else:
-            if gram20_wallet.owner_address != msg['source']:
-                logger.warning(f"Owner address for {wallet_address} is {gram20_wallet.owner_address}, but mint has been sent from {msg['source']}")
+            if gram20_wallet.owner != msg['source']:
+                logger.warning(f"Owner address for {wallet_address} is {gram20_wallet.owner}, but mint has been sent from {msg['source']}")
                 return False
 
         return True
