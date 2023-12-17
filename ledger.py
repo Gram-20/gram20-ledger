@@ -30,9 +30,9 @@ class Gram20Action:
 
 
 GRAM20_PREFIX = """data:application/json,"""
-GRAM20_MASTER = "EQDuqo1QXVJ1q0mR2GhDg7WwTJKLm_sb8axE8KRMQFZk7e6x"
+GRAM20_MASTER = "EQDdgM87oXpEn2aK_Qiiqmbtfs9ST8pqkjbeSnhW4oKdqeS5"
 GRAM20_TOKEN_MASTER_CODE_HASH = "AvzC2WZxNMP0iFeZukQE8yYxgznho0HJdPo1IPFPlCE="
-GRAM20_USER_CODE_HASH = "rf/CaeBl3BPXRaouTSsCADuZ3yNQ8+elTziKIqt0k2I="
+GRAM20_USER_CODE_HASH = "YQ3yZNsRQiyYTnDoj7iAgJ2/ZzHDRwhJ34dtnY2mZwA="
 
 # Contact executor exception - should be treated as a problem
 class ExecutorException(Exception):
@@ -46,14 +46,15 @@ class ProcessingFailed(Exception):
         self.log = log
 
 VALID_BASIC_WALLETS = set([
-    "1JAvzJ+tdGmPqmonoONTIgpo2g3PcuMryy657gQhfBfTBiw=",
-    "WHzHie/xyE9G7DeX5F/ICaFP9a4k8eDHpqmcydyQYf8=",
-    "XJpeaMEI4YchoHxC+ZVr+zmtd+xtYktgxXbsiO7mUyk=",
-    "/pUw0yQ4Uwg+8u8LTCkIwKv2+hwx6iQ6rKpb+MfXU/E=",
-    "thBBpYp5gLlG6PueGY48kE0keZ/6NldOpCUcQaVm9YE=",
-    "hNr6RJ+Ypph3ibojI1gHK8D3bcRSQAKl0JGLmnXS1Zk=",
-    "ZN1UgFUixb6KnbWc6gEFzPDQh4bKeb64y3nogKjXMi0=",
-    "/rX/aCDi/w2Ug+fg1iyBfYRniftK5YDIeIZtlZ2r1cA="
+    "oM/CxIruFqJx8s/AtzgtgXVs7LEBfQd/qqs7tgL2how=", # wallet v1 r1
+    "1JAvzJ+tdGmPqONTIgpo2g3PcuMryy657gQhfBfTBiw=", # wallet v1 r2
+    "WHzHie/xyE9G7DeX5F/ICaFP9a4k8eDHpqmcydyQYf8=", # wallet v1 r3
+    "XJpeaMEI4YchoHxC+ZVr+zmtd+xtYktgxXbsiO7mUyk=", # wallet v2 r1
+    "/pUw0yQ4Uwg+8u8LTCkIwKv2+hwx6iQ6rKpb+MfXU/E=", # wallet v2 r2
+    "thBBpYp5gLlG6PueGY48kE0keZ/6NldOpCUcQaVm9YE=", # wallet v3 r1
+    "hNr6RJ+Ypph3ibojI1gHK8D3bcRSQAKl0JGLmnXS1Zk=", # wallet v3 r2
+    "ZN1UgFUixb6KnbWc6gEFzPDQh4bKeb64y3nogKjXMi0=", # wallet v4 r1
+    "/rX/aCDi/w2Ug+fg1iyBfYRniftK5YDIeIZtlZ2r1cA=" # wallet v4 r2
 ])
 
 class Gram20LedgerUpdater:
@@ -212,7 +213,8 @@ class Gram20LedgerUpdater:
         assert action.op == 'mint'
         minter = action.source
         state = await get_last_state(conn, minter, action.tick)
-        amount = int(action.obj['amt'])
+        repeat = int(action.obj['repeat'])
+        amount = int(action.obj['amt']) * repeat
         self.validate_condition(amount > 0, "mint_non_positive", f"Cant mint {amount}")
 
         token_info = await get_gram20_token_by_tick(conn, action.tick)
