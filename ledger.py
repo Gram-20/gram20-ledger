@@ -30,9 +30,9 @@ class Gram20Action:
 
 
 GRAM20_PREFIX = """data:application/json,"""
-GRAM20_MASTER = "EQDdgM87oXpEn2aK_Qiiqmbtfs9ST8pqkjbeSnhW4oKdqeS5"
-GRAM20_TOKEN_MASTER_CODE_HASH = "AvzC2WZxNMP0iFeZukQE8yYxgznho0HJdPo1IPFPlCE="
-GRAM20_USER_CODE_HASH = "YQ3yZNsRQiyYTnDoj7iAgJ2/ZzHDRwhJ34dtnY2mZwA="
+GRAM20_MASTER = os.getenv("GRAM20_MASTER", None)
+GRAM20_TOKEN_MASTER_CODE_HASH = os.getenv("GRAM20_TOKEN_MASTER_CODE_HASH", None)
+GRAM20_USER_CODE_HASH = os.getenv("GRAM20_USER_CODE_HASH", None)
 
 # Contact executor exception - should be treated as a problem
 class ExecutorException(Exception):
