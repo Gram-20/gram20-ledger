@@ -34,9 +34,16 @@ GRAM20_MASTER = "EQDuqo1QXVJ1q0mR2GhDg7WwTJKLm_sb8axE8KRMQFZk7e6x"
 GRAM20_TOKEN_MASTER_CODE_HASH = "AvzC2WZxNMP0iFeZukQE8yYxgznho0HJdPo1IPFPlCE="
 GRAM20_USER_CODE_HASH = "rf/CaeBl3BPXRaouTSsCADuZ3yNQ8+elTziKIqt0k2I="
 
+# Contact executor exception - should be treated as a problem
 class ExecutorException(Exception):
     def __init__(self, msg):
         self.message = msg
+
+# soft exception - should be logged in rejections log
+class ProcessingFailed(Exception):
+    def __init__(self, msg, log):
+        self.message = msg
+        self.log = log
 
 VALID_BASIC_WALLETS = set([
     "1JAvzJ+tdGmPqmonoONTIgpo2g3PcuMryy657gQhfBfTBiw=",
@@ -136,6 +143,8 @@ class Gram20LedgerUpdater:
                                 msg=msg,
                                 tick=obj.get('tick', None)
                             ))
+                    except ProcessingFailed as failed:
+                        await self.handle_rejection(conn, msg, failed)
                     except ExecutorException as e_e:
                         raise e_e
                     except Exception as p_e:
@@ -146,19 +155,26 @@ class Gram20LedgerUpdater:
             # process deploy actions
             for action in all_actions:
                 if action.op == 'deploy':
-                    if await self.deploy_token(conn, action, current_seqno):
-                        inserted_actions += 1
+                    try:
+                        if await self.deploy_token(conn, action, current_seqno):
+                            inserted_actions += 1
+                    except ProcessingFailed as failed:
+                        await self.handle_rejection(conn, action.msg, failed)
             # next sort all actions:
             all_actions = sorted(all_actions, key=lambda action: (action.lt, int.from_bytes(base64.b64decode(action.msg.hash), byteorder='big')) )
             self.supply_updates = {}
             for action in all_actions:
                 logger.info(f"Applying action {action}")
-                if action.op == 'mint':
-                    if await self.apply_mint(conn, action, current_seqno, current_block_time):
-                        inserted_actions +=1
-                elif action.op == 'transfer':
-                    if await self.apply_transfer(conn, action, current_seqno):
-                        inserted_actions += 1
+                try:
+                    if action.op == 'mint':
+                        if await self.apply_mint(conn, action, current_seqno, current_block_time):
+                            inserted_actions +=1
+                    elif action.op == 'transfer':
+                        if await self.apply_transfer(conn, action, current_seqno):
+                            inserted_actions += 1
+                except ProcessingFailed as failed:
+                    await self.handle_rejection(conn, action.msg, failed)
+
             await self.update_supply_history(conn, current_seqno)
 
             await self.check_premints(conn, current_seqno, current_block_time)
@@ -166,6 +182,19 @@ class Gram20LedgerUpdater:
 
             await conn.commit() # finally commit all this stuff
             return time() - current_block_time
+
+    async def handle_rejection(self, conn, msg, err):
+        await conn.execute(insert(Gram20Rejection).values([{
+            "msg_id": msg.msg_id,
+            "owner": msg.source,
+            "reason": err.message,
+            'log': err.log
+        }]))
+
+    def validate_condition(self, condition, message, log):
+        if not condition:
+            logger.warning(f"Condition not met: {message}: {log}")
+            raise ProcessingFailed(message, log)
 
     async def update_supply_history(self, conn, seqno):
         if len(self.supply_updates) > 0:
@@ -183,19 +212,20 @@ class Gram20LedgerUpdater:
         minter = action.source
         state = await get_last_state(conn, minter, action.tick)
         amount = int(action.obj['amt'])
+        self.validate_condition(amount > 0, "mint_non_positive", f"Cant mint {amount}")
+
         token_info = await get_gram20_token_by_tick(conn, action.tick)
         assert token_info is not None # not possible actually
-        if token_info.mint_start > block_time:
-            logger.warning(f"Mint is not started for {token_info.tick}, blocked {minter}")
-            return False
-        if amount > token_info.mint_limit:
-            logger.warning(f"Mint attempt over limit ({amount} over {token_info.mint_limit} by {minter} for {action.tick}")
-            return False
+        self.validate_condition(block_time >= token_info.mint_start, "mint_before_start",
+                                f"Mint is not started for {token_info.tick}, blocked {minter}")
+
+        self.validate_condition(amount <= token_info.mint_limit, "mint_over_limit",
+                                f"Mint attempt over limit ({amount} over {token_info.mint_limit} by {minter} for {action.tick}")
+
         allowed_to_mint = token_info.max_supply - token_info.supply
-        if allowed_to_mint <= 0: # only eq zero, negative is not possible but who knows...
-            # TODO - may be store empty mints items to the ledger?
-            logger.warning("Mint is not possible for")
-            return False
+        self.validate_condition(allowed_to_mint > 0, "overmint",
+                                f"Mint is not possible for {token_info.tick}")
+
         amount = min(allowed_to_mint, amount) # avoid overmint
         # prev state
         new_state = Gram20Ledger(
@@ -221,13 +251,18 @@ class Gram20LedgerUpdater:
         sender = action.source
         state = await get_last_state(conn, sender, action.tick)
         amount = int(action.obj['amt'])
+        self.validate_condition(amount > 0, "transfer_non_positive", f"Cant transfer {amount}")
         memo = str(action.obj.get('memo', ''))
 
-        if amount > state.balance:
-            logger.warning("Transfer is not possible due to low balance")
-            return False
+        self.validate_condition(amount <= state.balance, "transfer_low_balance", f"Transfer is not possible due to low balance {state.balance}")
 
-        recipient = Address(action.obj['to']).to_string(1, 1, 1)
+        recipient = action.obj['to']
+        try:
+            recipient = Address(recipient).to_string(1, 1, 1)
+        except:
+            logger.warning(f"Unable to convert address: {recipient}")
+            raise ProcessingFailed("transfer_bad_format", f"Unable to convert address: {recipient}")
+
 
         new_state_sender = Gram20Ledger(
             prev_state=state.id,
@@ -283,7 +318,7 @@ class Gram20LedgerUpdater:
                     msg_id=token.msg_id,
                     hash=token.hash, # the same as for deploy
                     seqno=seqno,
-                    lt=token.lt, # there are no lt for this action, so just use from token deploy
+                    lt=token.lt if recipient_state is None else recipient_state.lt + 1, # if we have lt from prev state, use lt+1, otherwise just lt of token deploy
                     utime=block_ts,
                     owner=token.owner,
                     tick=token.tick,
@@ -299,24 +334,21 @@ class Gram20LedgerUpdater:
         acc_state = await get_account_info(conn, action.destination)
         if acc_state is None or not acc_state.data or not acc_state.code_hash:
             raise Exception(f"Unable to get account state for token master {action}")
-        if acc_state.code_hash != GRAM20_TOKEN_MASTER_CODE_HASH:
-            # TODO logging errors
-            logger.warning(f"Unable to deploy Gram20 token master with code hash {acc_state.code_hash}")
-            return False
+
+        self.validate_condition(acc_state.code_hash == GRAM20_TOKEN_MASTER_CODE_HASH, "wrong_token_root_sc",
+                                f"Unable to deploy Gram20 token master with code hash {acc_state.code_hash}")
         tick = action.tick
-        if not tick or len(tick) != 4:
-            logger.warning(f"Unable to deploy Gram20 token for tick {tick}")
-            return False
+        self.validate_condition(tick and len(tick) == 4, "token_root_bad_tick",
+                                logger.warning(f"Unable to deploy Gram20 token for tick {tick}"))
         tick_cell = Cell()
         tick_cell.bits.write_string(tick)
-        logger.info(bytes_to_b64str(tick_cell.to_boc(False)))
+        # logger.info(bytes_to_b64str(tick_cell.to_boc(False)))
         real_token_master, = await self._execute(code=self.master_code, data=self.master_data,
                                                 method='calculate_root_address', types=['address'],
                                                 address=GRAM20_MASTER,
                                                 arguments=[bytes_to_b64str(tick_cell.to_boc(False))])
-        if real_token_master != action.destination:
-            logger.warning(f"Wrong token master address: {action.destination}, but for tick {tick} it should be {real_token_master}")
-            return False
+        self.validate_condition(real_token_master == action.destination, "token_root_wrong_address",
+                        logger.warning(f"Wrong token master address: {action.destination}, but for tick {tick} it should be {real_token_master}"))
 
         is_inited, = await self._execute(code=self.token_master_code, data=acc_state.data,
                                          address=action.destination,
@@ -336,6 +368,7 @@ class Gram20LedgerUpdater:
             else:
                 lock_type = Gram20Token.UNLOCK_TYPE_TIMESTAMP
                 unlock_ts = int(obj['unlock'])
+
         token = Gram20Token(
             msg_id=action.msg.msg_id,
             hash=action.msg.hash,
@@ -380,49 +413,44 @@ class Gram20LedgerUpdater:
             src_code_hash = None
             if src_acc:
                 src_code_hash = src_acc.code_hash
-            if src_code_hash not in VALID_BASIC_WALLETS:
-                # TODO logging
-                logger.warning(f"Ignoring sender with wrong code_hash: {msg['source']} {src_code_hash}")
-                return False
+            self.validate_condition(src_code_hash in VALID_BASIC_WALLETS, "basic_walet",
+                                    f"Ignoring sender with wrong code_hash: {msg['source']} {src_code_hash}")
 
         wallet_address = msg['destination']
         gram20_wallet = await get_gram20_wallet(conn, wallet_address)
         if not gram20_wallet:
             logger.warning(f"Gram20 not inited for {wallet_address}")
             dst_acc = await get_account_info(conn, wallet_address)
-            if not dst_acc or not dst_acc.code_hash or not dst_acc.data:
-                logger.warning(f"Gram20 wallet {wallet_address} is not inited")
-                return False
-            if dst_acc.code_hash != GRAM20_USER_CODE_HASH:
-                logger.warning(f"Gram20 mint {msg['hash']} has been sent to wrong contract with code hash {dst_acc.code_hash}")
-                return False
+            self.validate_condition(dst_acc and dst_acc.code_hash and dst_acc.data, "user_wallet_uninit",
+                                    f"Gram20 wallet {wallet_address} is not inited")
+            self.validate_condition(dst_acc.code_hash == GRAM20_USER_CODE_HASH, "user_wallet_wrong_sc",
+                f"Gram20 mint {msg['hash']} has been sent to wrong contract with code hash {dst_acc.code_hash}")
+
             root_address, owner_address, _, _, _, _ = await self._execute(code=self.user_code,
                                                               data=dst_acc.data,
                                                               address=wallet_address,
                                                               method='get_user_data',
                                                               types=['address', 'address', 'int', 'int', 'int', 'int'])
             gram20_token = await get_gram20_token(conn, root_address)
-            if gram20_token is None:
-                logger.warning(f"Gram20 token {root_address} is not deployed yet!")
-                return False
+            self.validate_condition(gram20_token is not None, "token_root_not_deployed",
+                                    f"Gram20 token {root_address} is not deployed yet!")
 
             _, real_wallet_address = await self._execute(code=self.token_master_code, address=root_address,
                                                       data=gram20_token.data, method='get_user_data', types=['address', 'address'], arguments=[owner_address])
-            if real_wallet_address != wallet_address:
-                logger.warning(f"Address calculated by {root_address} is {real_wallet_address}, but smart contract address is {msg['destination']}")
-                return False
+            self.validate_condition(real_wallet_address == wallet_address, "user_wallet_wrong_address",
+                                    f"Address calculated by {root_address} is {real_wallet_address}, but smart contract address is {msg['destination']}")
+
             await conn.execute(self.gram20_wallets_t.insert(), [Gram20Wallet(
                 address=wallet_address,
                 owner=owner_address,
                 tick=gram20_token.tick
             ).as_dict()])
-            if owner_address != msg['source']:
-                logger.warning(f"Owner address for {wallet_address} is {owner_address}, but mint has been sent from {msg['source']}")
-                return False
+
+            self.validate_condition(owner_address == msg['source'], "user_wallet_wrong_sender",
+                                    f"Owner address for {wallet_address} is {owner_address}, but mint has been sent from {msg['source']}")
         else:
-            if gram20_wallet.owner != msg['source']:
-                logger.warning(f"Owner address for {wallet_address} is {gram20_wallet.owner}, but mint has been sent from {msg['source']}")
-                return False
+            self.validate_condition(gram20_wallet.owner == msg['source'], "user_wallet_wrong_sender",
+                                    f"Owner address for {wallet_address} is {gram20_wallet.owner}, but mint has been sent from {msg['source']}")
 
         return True
 
