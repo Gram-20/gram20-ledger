@@ -124,13 +124,14 @@ class Gram20LedgerUpdater:
                         if obj['p'] != 'gram-20':
                             continue
                         op = obj['op']
+                        tick = obj.get('tick', None)
                         is_valid = False
                         if op == 'deploy' and msg.source == GRAM20_MASTER:
                             is_valid = True
                         elif op == 'mint':
-                            is_valid = await self.validate_mint(conn, msg)
+                            is_valid = await self.validate_mint(conn, msg, tick)
                         elif op == 'transfer':
-                            is_valid = await self.validate_transfer(conn, msg)
+                            is_valid = await self.validate_transfer(conn, msg, tick)
 
                         if is_valid:
                             all_actions.append(Gram20Action(
@@ -141,7 +142,7 @@ class Gram20LedgerUpdater:
                                 obj=obj,
                                 op=op,
                                 msg=msg,
-                                tick=obj.get('tick', None)
+                                tick=tick
                             ))
                     except ProcessingFailed as failed:
                         await self.handle_rejection(conn, msg, failed)
@@ -400,14 +401,14 @@ class Gram20LedgerUpdater:
 
         return True
 
-    async def validate_mint(self, conn, msg):
-        return await self.validate_action(conn, msg, validate_wallet_type=True)
+    async def validate_mint(self, conn, msg, tick):
+        return await self.validate_action(conn, msg, tick, validate_wallet_type=True)
 
-    async def validate_transfer(self, conn, msg):
-        return await self.validate_action(conn, msg, validate_wallet_type=False)
+    async def validate_transfer(self, conn, msg, tick):
+        return await self.validate_action(conn, msg, tick, validate_wallet_type=False)
 
     ## Validates sender wallet code and destination wallet
-    async def validate_action(self, conn, msg, validate_wallet_type=False):
+    async def validate_action(self, conn, msg, tick, validate_wallet_type=False):
         if validate_wallet_type:
             src_acc = await get_account_info(conn, msg['source'])
             src_code_hash = None
@@ -448,9 +449,13 @@ class Gram20LedgerUpdater:
 
             self.validate_condition(owner_address == msg['source'], "user_wallet_wrong_sender",
                                     f"Owner address for {wallet_address} is {owner_address}, but mint has been sent from {msg['source']}")
+            self.validate_condition(gram20_token.tick == tick, "wrong_tick",
+                                    f"Tick from user wallet is {gram20_token.tick}, but action with tick {tick}")
         else:
             self.validate_condition(gram20_wallet.owner == msg['source'], "user_wallet_wrong_sender",
                                     f"Owner address for {wallet_address} is {gram20_wallet.owner}, but mint has been sent from {msg['source']}")
+            self.validate_condition(gram20_wallet.tick == tick, "wrong_tick",
+                                    f"Tick from user wallet is {gram20_wallet.tick}, but action with tick {tick}")
 
         return True
 
