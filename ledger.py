@@ -146,7 +146,7 @@ class Gram20LedgerUpdater:
                                 tick=tick
                             ))
                     except ProcessingFailed as failed:
-                        await self.handle_rejection(conn, msg, failed)
+                        await self.handle_rejection(conn, msg, failed, current_block_time)
                     except ExecutorException as e_e:
                         raise e_e
                     except Exception as p_e:
@@ -158,10 +158,10 @@ class Gram20LedgerUpdater:
             for action in all_actions:
                 if action.op == 'deploy':
                     try:
-                        if await self.deploy_token(conn, action, current_seqno):
+                        if await self.deploy_token(conn, action, current_seqno, current_block_time):
                             inserted_actions += 1
                     except ProcessingFailed as failed:
-                        await self.handle_rejection(conn, action.msg, failed)
+                        await self.handle_rejection(conn, action.msg, failed, current_block_time)
             # next sort all actions:
             all_actions = sorted(all_actions, key=lambda action: (action.lt, int.from_bytes(base64.b64decode(action.msg.hash), byteorder='big')) )
             self.supply_updates = {}
@@ -175,9 +175,9 @@ class Gram20LedgerUpdater:
                         if await self.apply_transfer(conn, action, current_seqno):
                             inserted_actions += 1
                 except ProcessingFailed as failed:
-                    await self.handle_rejection(conn, action.msg, failed)
+                    await self.handle_rejection(conn, action.msg, failed, current_block_time)
 
-            await self.update_supply_history(conn, current_seqno)
+            await self.update_supply_history(conn, current_seqno, current_block_time)
 
             await self.check_premints(conn, current_seqno, current_block_time)
             await update_processing_history(conn, current_seqno, current_block_time, inserted_actions)
@@ -185,12 +185,13 @@ class Gram20LedgerUpdater:
             await conn.commit() # finally commit all this stuff
             return time() - current_block_time
 
-    async def handle_rejection(self, conn, msg, err):
+    async def handle_rejection(self, conn, msg, err, block_time):
         await conn.execute(insert(Gram20Rejection).values([{
             "msg_id": msg.msg_id,
             "owner": msg.source,
             "reason": err.message,
-            'log': err.log
+            'log': err.log,
+            'block_time': block_time
         }]))
 
     def validate_condition(self, condition, message, log):
@@ -198,14 +199,15 @@ class Gram20LedgerUpdater:
             logger.warning(f"Condition not met: {message}: {log}")
             raise ProcessingFailed(message, log)
 
-    async def update_supply_history(self, conn, seqno):
+    async def update_supply_history(self, conn, seqno, block_time):
         if len(self.supply_updates) > 0:
             updates = []
             for tick, supply in self.supply_updates.items():
                 updates.append({
                     'tick': tick,
                     'seqno': seqno,
-                    'supply': supply
+                    'supply': supply,
+                    'block_time': block_time
                 })
             await conn.execute(insert(Gram20SupplyHistory).values(updates))
 
@@ -335,7 +337,7 @@ class Gram20LedgerUpdater:
                 await conn.execute(update(Gram20Token).where(Gram20Token.id == token.id).values(preminted=True))
 
 
-    async def deploy_token(self, conn, action: Gram20Action, seqno):
+    async def deploy_token(self, conn, action: Gram20Action, seqno, block_time):
         acc_state = await get_account_info(conn, action.destination)
         if acc_state is None or not acc_state.data or not acc_state.code_hash:
             raise Exception(f"Unable to get account state for token master {action}")
@@ -400,7 +402,8 @@ class Gram20LedgerUpdater:
         await conn.execute(insert(Gram20SupplyHistory).values({
             'tick': tick,
             'seqno': seqno,
-            'supply': int(obj['premint'])
+            'supply': int(obj['premint']),
+            'block_time': block_time
         }))
 
         return True
