@@ -100,8 +100,8 @@ class Gram20LedgerUpdater:
         logger.info("Starting ledger processing!")
         while True:
             try:
-                if await self.processig_iteration() < 100:
-                    await asyncio.sleep(4)
+                if await self.processig_iteration() < 5:
+                    await asyncio.sleep(3)
             except Exception as e:
                 logger.error(f"Failed to process ledger iteration: {e} {traceback.format_exc()}")
 
