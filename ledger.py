@@ -315,7 +315,7 @@ class Gram20LedgerUpdater:
                     allowed = True
             elif token.lock_type == Gram20Token.UNLOCK_TYPE_TIMESTAMP:
                 if block_ts >= token.unlock:
-                    logger.info(f"premint unlock time reached for {token.tick}, preminting {token.premint}")
+                    logger.info(f"premint unlock time reached for {token.tick}, preminting {token.premint} {block_ts} >= {token.unlock}")
                     allowed = True
             if allowed:
                 recipient_state = await get_last_state(conn, token.owner, token.tick)
