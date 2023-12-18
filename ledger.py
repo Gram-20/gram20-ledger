@@ -313,7 +313,7 @@ class Gram20LedgerUpdater:
                 if token.supply >= token.max_supply:
                     logger.info(f"max supply reached for {token.tick}, preminting {token.premint}")
                     allowed = True
-            elif token.unlock_type == Gram20Token.UNLOCK_TYPE_TIMESTAMP:
+            elif token.lock_type == Gram20Token.UNLOCK_TYPE_TIMESTAMP:
                 if block_ts >= token.unlock:
                     logger.info(f"premint unlock time reached for {token.tick}, preminting {token.premint}")
                     allowed = True
