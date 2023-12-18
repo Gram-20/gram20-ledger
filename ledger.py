@@ -355,7 +355,7 @@ class Gram20LedgerUpdater:
                                                 address=GRAM20_MASTER,
                                                 arguments=[bytes_to_b64str(tick_cell.to_boc(False))])
         self.validate_condition(real_token_master == action.destination, "token_root_wrong_address",
-                        logger.warning(f"Wrong token master address: {action.destination}, but for tick {tick} it should be {real_token_master}"))
+                        f"Wrong token master address: {action.destination}, but for tick {tick} it should be {real_token_master}")
 
         is_inited, = await self._execute(code=self.token_master_code, data=acc_state.data,
                                          address=action.destination,
