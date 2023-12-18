@@ -325,7 +325,7 @@ class Gram20LedgerUpdater:
                     msg_id=token.msg_id,
                     hash=token.hash, # the same as for deploy
                     seqno=seqno,
-                    lt=token.lt if recipient_state is None else recipient_state.lt + 1, # if we have lt from prev state, use lt+1, otherwise just lt of token deploy
+                    lt=token.lt if recipient_state.lt is None else recipient_state.lt + 1, # if we have lt from prev state, use lt+1, otherwise just lt of token deploy
                     utime=block_ts,
                     owner=token.owner,
                     tick=token.tick,
