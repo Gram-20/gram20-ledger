@@ -214,7 +214,7 @@ class Gram20LedgerUpdater:
         minter = action.source
         state = await get_last_state(conn, minter, action.tick)
         repeat = int(action.obj['repeat'])
-        amount = int(action.obj['amt']) * repeat
+        amount = int(action.obj['amt'])# * repeat
         self.validate_condition(amount > 0, "mint_non_positive", f"Cant mint {amount}")
 
         token_info = await get_gram20_token_by_tick(conn, action.tick)
@@ -224,6 +224,8 @@ class Gram20LedgerUpdater:
 
         self.validate_condition(amount <= token_info.mint_limit, "mint_over_limit",
                                 f"Mint attempt over limit ({amount} over {token_info.mint_limit} by {minter} for {action.tick}")
+        amount = int(action.obj['amt']) * repeat
+        self.validate_condition(amount > 0, "mint_non_positive", f"Cant mint {amount}")
 
         allowed_to_mint = token_info.max_supply - token_info.supply
         self.validate_condition(allowed_to_mint > 0, "overmint",
