@@ -369,12 +369,12 @@ class Gram20LedgerUpdater:
         lock_type = 'none'
         unlock_ts = None
         obj = action.obj
-        if obj['lock_type'] == 'unlock':
-            if obj['unlock'] == 'full':
-                lock_type = Gram20Token.UNLOCK_TYPE_FULL
-            else:
-                lock_type = Gram20Token.UNLOCK_TYPE_TIMESTAMP
-                unlock_ts = int(obj['unlock'])
+        # if obj['lock_type'] == 'unlock':
+        #     if obj['unlock'] == 'full':
+        #         lock_type = Gram20Token.UNLOCK_TYPE_FULL
+        #     else:
+        #         lock_type = Gram20Token.UNLOCK_TYPE_TIMESTAMP
+        #         unlock_ts = int(obj['unlock'])
 
         token = Gram20Token(
             msg_id=action.msg.msg_id,
@@ -386,9 +386,9 @@ class Gram20LedgerUpdater:
             owner=token_owner,
             tick=tick,
             max_supply=int(obj['max']),
-            supply=int(obj['premint']),
+            supply=0, #, int(obj['premint']),
             mint_limit=int(obj['limit']),
-            premint=int(obj['premint']),
+            premint=0, #int(obj['premint']),
             lock_type=lock_type,
             unlock=unlock_ts,
             mint_start=int(obj['start']),
