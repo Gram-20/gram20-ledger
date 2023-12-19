@@ -402,7 +402,7 @@ class Gram20LedgerUpdater:
         await conn.execute(insert(Gram20SupplyHistory).values({
             'tick': tick,
             'seqno': seqno,
-            'supply': int(obj['premint']),
+            'supply': token.supply,
             'block_time': block_time
         }))
 
