@@ -179,7 +179,7 @@ class Gram20LedgerUpdater:
 
             await self.update_supply_history(conn, current_seqno, current_block_time)
 
-            await self.check_premints(conn, current_seqno, current_block_time)
+            # await self.check_premints(conn, current_seqno, current_block_time)
             await update_processing_history(conn, current_seqno, current_block_time, inserted_actions)
 
             await conn.commit() # finally commit all this stuff
