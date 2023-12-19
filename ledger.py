@@ -246,12 +246,15 @@ class Gram20LedgerUpdater:
             tick=action.tick,
             balance=state.balance + amount,
             delta=amount,
-            action=Gram20Ledger.ACTION_TYPE_MINT
+            action=Gram20Ledger.ACTION_TYPE_MINT,
+            tx_fee=action.msg.fee,
+            protocol_fee=action.msg.value - action.msg.fee
         )
         await conn.execute(insert(Gram20Ledger, [new_state.as_dict()]))
         new_supply = token_info.supply + amount
         await conn.execute(update(Gram20Token).where(Gram20Token.id == token_info.id).values(supply=new_supply))
         self.supply_updates[action.tick] = new_supply # track supply per seqno for further actions
+        return True
 
     async def apply_transfer(self, conn, action, seqno):
         assert action.op == 'transfer'
@@ -284,7 +287,9 @@ class Gram20LedgerUpdater:
             delta=-1 * amount,
             action=Gram20Ledger.ACTION_TYPE_TRANSFER,
             comment=memo,
-            peer=recipient
+            peer=recipient,
+            tx_fee=action.msg.fee,
+            protocol_fee=action.msg.value - action.msg.fee
         )
 
         recipient_state = await get_last_state(conn, recipient, action.tick)
@@ -302,9 +307,12 @@ class Gram20LedgerUpdater:
             delta=amount,
             action=Gram20Ledger.ACTION_TYPE_TRANSFER,
             comment=memo,
-            peer=sender
+            peer=sender,
+            tx_fee=0,
+            protocol_fee=0,
         )
         await conn.execute(insert(Gram20Ledger, [new_state_sender.as_dict(), new_state_recipient.as_dict()]))
+        return True
 
     async def check_premints(self, conn, seqno, block_ts):
         for token in (await get_gram20_tokens_for_premint_check(conn)):
@@ -331,7 +339,9 @@ class Gram20LedgerUpdater:
                     tick=token.tick,
                     balance=recipient_state.balance + token.premint,
                     delta=token.premint,
-                    action=Gram20Ledger.ACTION_TYPE_PREMINT
+                    action=Gram20Ledger.ACTION_TYPE_PREMINT,
+                    protocol_fee=0,
+                    tx_fee=0
                 )
                 await conn.execute(insert(Gram20Ledger, [new_state_recipient.as_dict()]))
                 await conn.execute(update(Gram20Token).where(Gram20Token.id == token.id).values(preminted=True))
