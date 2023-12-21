@@ -253,6 +253,10 @@ class Gram20LedgerUpdater:
         await conn.execute(insert(Gram20Ledger, [new_state.as_dict()]))
         new_supply = token_info.supply + amount
         await conn.execute(update(Gram20Token).where(Gram20Token.id == token_info.id).values(supply=new_supply))
+        if new_state.balance > 0 and state.balance == 0: # new holder
+            await conn.execute(update(Gram20Token).where(Gram20Token.id == token_info.id)
+                               .values(total_holders=token_info.total_holders + 1))
+
         self.supply_updates[action.tick] = new_supply # track supply per seqno for further actions
         return True
 
@@ -292,6 +296,11 @@ class Gram20LedgerUpdater:
             protocol_fee=action.msg.value - action.msg.fee
         )
 
+        if new_state_sender.balance == 0 and state.balance > 0: # -1 holder
+            token_info = await get_gram20_token_by_tick(conn, action.tick)
+            await conn.execute(update(Gram20Token).where(Gram20Token.id == token_info.id)
+                               .values(total_holders=token_info.total_holders - 1))
+
         recipient_state = await get_last_state(conn, recipient, action.tick)
 
         new_state_recipient = Gram20Ledger(
@@ -312,6 +321,12 @@ class Gram20LedgerUpdater:
             protocol_fee=0,
         )
         await conn.execute(insert(Gram20Ledger, [new_state_sender.as_dict(), new_state_recipient.as_dict()]))
+
+        if new_state_recipient.balance > 0 and recipient_state.balance == 0: # +1 holder
+            token_info = await get_gram20_token_by_tick(conn, action.tick)
+            await conn.execute(update(Gram20Token).where(Gram20Token.id == token_info.id)
+                               .values(total_holders=token_info.total_holders + 1))
+
         return True
 
     async def check_premints(self, conn, seqno, block_ts):
@@ -344,6 +359,7 @@ class Gram20LedgerUpdater:
                     tx_fee=0
                 )
                 await conn.execute(insert(Gram20Ledger, [new_state_recipient.as_dict()]))
+                # TODO handle total holders
                 await conn.execute(update(Gram20Token).where(Gram20Token.id == token.id).values(preminted=True))
 
 
@@ -356,7 +372,7 @@ class Gram20LedgerUpdater:
                                 f"Unable to deploy Gram20 token master with code hash {acc_state.code_hash}")
         tick = action.tick
         self.validate_condition(tick and len(tick) == 4, "token_root_bad_tick",
-                                logger.warning(f"Unable to deploy Gram20 token for tick {tick}"))
+                                f"Unable to deploy Gram20 token for tick {tick}")
         tick_cell = Cell()
         tick_cell.bits.write_string(tick)
         # logger.info(bytes_to_b64str(tick_cell.to_boc(False)))
@@ -397,6 +413,7 @@ class Gram20LedgerUpdater:
             tick=tick,
             max_supply=int(obj['max']),
             supply=0, #, int(obj['premint']),
+            total_holders=0,
             mint_limit=int(obj['limit']),
             premint=0, #int(obj['premint']),
             lock_type=lock_type,
