@@ -215,8 +215,14 @@ class Gram20LedgerUpdater:
         assert action.op == 'mint'
         minter = action.source
         state = await get_last_state(conn, minter, action.tick)
-        repeat = int(action.obj['repeat'])
-        amount = int(action.obj['amt'])# * repeat
+        try:
+            repeat = int(action.obj['repeat'])
+        except:
+            raise ProcessingFailed("wrong_repeat", "wrong repeat: " + action.obj['repeat'])
+        try:
+            amount = int(action.obj['amt'])# * repeat
+        except:
+            raise ProcessingFailed("wrong_amt", "wrong_amt: " + action.obj['amt'])
         self.validate_condition(amount > 0, "mint_non_positive", f"Cant mint {amount}")
 
         token_info = await get_gram20_token_by_tick(conn, action.tick)
