@@ -263,7 +263,7 @@ class Gram20LedgerUpdater:
     async def apply_transfer(self, conn, action, seqno):
         assert action.op == 'transfer'
         gram_token = await get_gram20_token_by_tick(conn, "gram")
-        self.validate_condition(gram_token.supply >= gram_token.max_supply, "transfers_not_enabke",
+        self.validate_condition(gram_token.supply >= gram_token.max_supply, "transfers_not_enable",
                                 f"Transfers not enabled while gram token not fully minted")
 
         sender = action.source
