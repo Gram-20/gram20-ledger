@@ -262,6 +262,10 @@ class Gram20LedgerUpdater:
 
     async def apply_transfer(self, conn, action, seqno):
         assert action.op == 'transfer'
+        gram_token = await get_gram20_token_by_tick("gram")
+        self.validate_condition(gram_token.supply >= gram_token.max_supply, "transfers_not_enabke",
+                                f"Transfers not enabled while gram token not fully minted")
+
         sender = action.source
         state = await get_last_state(conn, sender, action.tick)
         amount = int(action.obj['amt'])
