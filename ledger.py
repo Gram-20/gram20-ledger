@@ -1,6 +1,7 @@
 #!/usr/bin/env python
 
 import asyncio
+import math
 import os
 import base64
 
@@ -172,7 +173,7 @@ class Gram20LedgerUpdater:
                         if await self.apply_mint(conn, action, current_seqno, current_block_time):
                             inserted_actions +=1
                     elif action.op == 'transfer':
-                        if await self.apply_transfer(conn, action, current_seqno):
+                        if await self.apply_transfer(conn, action, current_seqno, current_block_time):
                             inserted_actions += 1
                 except ProcessingFailed as failed:
                     await self.handle_rejection(conn, action.msg, failed, current_block_time)
@@ -266,11 +267,13 @@ class Gram20LedgerUpdater:
         self.supply_updates[action.tick] = new_supply # track supply per seqno for further actions
         return True
 
-    async def apply_transfer(self, conn, action, seqno):
+    async def apply_transfer(self, conn, action, seqno, current_block_time):
         assert action.op == 'transfer'
-        gram_token = await get_gram20_token_by_tick(conn, "gram")
-        self.validate_condition(gram_token.supply >= gram_token.max_supply, "transfers_not_enable",
-                                f"Transfers not enabled while gram token not fully minted")
+        # Sun Dec 24 2023 06:00:00 GMT+0000
+        self.validate_condition(current_block_time >= 1703397600, "transfer_not_enabled", "Transfers before Sun Dec 24 2023 06UTC")
+        # gram_token = await get_gram20_token_by_tick(conn, "gram")
+        # self.validate_condition(gram_token.supply >= gram_token.max_supply, "transfers_not_enable",
+        #                         f"Transfers not enabled while gram token not fully minted")
 
         sender = action.source
         state = await get_last_state(conn, sender, action.tick)
@@ -412,6 +415,11 @@ class Gram20LedgerUpdater:
         #         lock_type = Gram20Token.UNLOCK_TYPE_TIMESTAMP
         #         unlock_ts = int(obj['unlock'])
 
+        max_supply = max(4000000, int(obj['max']))
+        mint_limit = int(obj['limit'])
+        if max_supply / mint_limit < 4000000:
+            mint_limit = math.ceil(max_supply / 4000000.0)
+
         token = Gram20Token(
             msg_id=action.msg.msg_id,
             hash=action.msg.hash,
@@ -421,10 +429,10 @@ class Gram20LedgerUpdater:
             utime=action.msg.utime,
             owner=token_owner,
             tick=tick,
-            max_supply=int(obj['max']),
+            max_supply=max_supply,
             supply=0, #, int(obj['premint']),
             total_holders=0,
-            mint_limit=int(obj['limit']),
+            mint_limit=mint_limit,
             premint=0, #int(obj['premint']),
             lock_type=lock_type,
             unlock=unlock_ts,
