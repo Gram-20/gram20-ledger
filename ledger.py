@@ -277,7 +277,11 @@ class Gram20LedgerUpdater:
 
         sender = action.source
         state = await get_last_state(conn, sender, action.tick)
-        amount = int(action.obj['amt'])
+        try:
+            amount = int(action.obj['amt'])
+        except:
+            raise ProcessingFailed("wrong_amount", "wrong amount: " + action.obj)
+
         self.validate_condition(amount > 0, "transfer_non_positive", f"Cant transfer {amount}")
         memo = str(action.obj.get('memo', ''))
 
