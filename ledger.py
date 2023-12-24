@@ -280,7 +280,7 @@ class Gram20LedgerUpdater:
         try:
             amount = int(action.obj['amt'])
         except:
-            raise ProcessingFailed("wrong_amount", "wrong amount: " + action.obj)
+            raise ProcessingFailed("wrong_amount", f"wrong amount: {action.obj}")
 
         self.validate_condition(amount > 0, "transfer_non_positive", f"Cant transfer {amount}")
         memo = str(action.obj.get('memo', ''))
