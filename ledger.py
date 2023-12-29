@@ -419,10 +419,14 @@ class Gram20LedgerUpdater:
         #         lock_type = Gram20Token.UNLOCK_TYPE_TIMESTAMP
         #         unlock_ts = int(obj['unlock'])
 
-        max_supply = max(4000000, int(obj['max']))
+        max_supply = int(obj['max'])
+        if block_time <= 1703872800:
+            max_supply = max(4000000, max_supply)
         mint_limit = int(obj['limit'])
-        if max_supply / mint_limit < 4000000:
-            mint_limit = math.ceil(max_supply / 4000000.0)
+        if block_time <= 1703872800:
+            if max_supply / mint_limit < 4000000:
+                mint_limit = math.ceil(max_supply / 4000000.0)
+
 
         token = Gram20Token(
             msg_id=action.msg.msg_id,
