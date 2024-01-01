@@ -215,7 +215,7 @@ class Gram20LedgerUpdater:
     async def apply_mint(self, conn, action, seqno, block_time):
         assert action.op == 'mint'
         minter = action.source
-        state = await get_last_state(conn, minter, action.tick)
+        state = await self.get_last_state(conn, minter, action.tick)
         try:
             repeat = int(action.obj['repeat'])
         except:
@@ -267,6 +267,9 @@ class Gram20LedgerUpdater:
         self.supply_updates[action.tick] = new_supply # track supply per seqno for further actions
         return True
 
+    async def get_last_state(self, conn, sender, tick):
+        return await get_last_state(conn, sender, tick)
+
     async def apply_transfer(self, conn, action, seqno, current_block_time):
         assert action.op == 'transfer'
         # Sun Dec 24 2023 06:00:00 GMT+0000
@@ -276,7 +279,7 @@ class Gram20LedgerUpdater:
         #                         f"Transfers not enabled while gram token not fully minted")
 
         sender = action.source
-        state = await get_last_state(conn, sender, action.tick)
+        state = await self.get_last_state(conn, sender, action.tick)
         try:
             amount = int(action.obj['amt'])
         except:
@@ -318,7 +321,7 @@ class Gram20LedgerUpdater:
             await conn.execute(update(Gram20Token).where(Gram20Token.id == token_info.id)
                                .values(total_holders=token_info.total_holders - 1))
 
-        recipient_state = await get_last_state(conn, recipient, action.tick)
+        recipient_state = await self.get_last_state(conn, recipient, action.tick)
 
         new_state_recipient = Gram20Ledger(
             prev_state=recipient_state.id,
@@ -358,7 +361,7 @@ class Gram20LedgerUpdater:
                     logger.info(f"premint unlock time reached for {token.tick}, preminting {token.premint} {block_ts} >= {token.unlock}")
                     allowed = True
             if allowed:
-                recipient_state = await get_last_state(conn, token.owner, token.tick)
+                recipient_state = await self.get_last_state(conn, token.owner, token.tick)
 
                 new_state_recipient = Gram20Ledger(
                     prev_state=recipient_state.id,
