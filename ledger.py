@@ -72,7 +72,7 @@ class Gram20LedgerUpdater:
             master_state = await get_account_info(conn, GRAM20_MASTER)
             self.master_data = master_state.data
             assert self.master_data is not None
-            
+
             self.user_code = await get_code(conn, GRAM20_USER_CODE_HASH)
             assert self.user_code is not None
             self.master_code = await get_code(conn, master_state.code_hash)
@@ -297,6 +297,8 @@ class Gram20LedgerUpdater:
             logger.warning(f"Unable to convert address: {recipient}")
             raise ProcessingFailed("transfer_bad_format", f"Unable to convert address: {recipient}")
 
+        self.validate_condition(recipient != sender, "transfer_to_self_not_permitted", "Transfers to self not permitted")
+
 
         new_state_sender = Gram20Ledger(
             prev_state=state.id,
@@ -406,7 +408,7 @@ class Gram20LedgerUpdater:
         is_inited, = await self._execute(code=self.token_master_code, data=acc_state.data,
                                          address=action.destination,
                                                 method='get_root_data', types=['int'], arguments=[])
-        
+
         assert is_inited == '-1', f"Token {action.destination} is not inited: {is_inited}" # must be always, but who knows..
 
         _, _, _, token_owner = await self._execute(code=self.token_master_code, data=acc_state.data,
