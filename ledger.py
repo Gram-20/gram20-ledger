@@ -164,7 +164,7 @@ class Gram20LedgerUpdater:
                     except ProcessingFailed as failed:
                         await self.handle_rejection(conn, action.msg, failed, current_block_time)
             # next sort all actions:
-            all_actions = sorted(all_actions, key=lambda action: (action.lt, int.from_bytes(base64.b64decode(action.msg.hash), byteorder='big')) )
+            all_actions = sorted(all_actions, key=lambda action: (action.lt, action.msg.hash))
             self.supply_updates = {}
             for action in all_actions:
                 logger.info(f"Applying action {action}")
