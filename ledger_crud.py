@@ -66,7 +66,7 @@ async def get_last_state(session, address, tick):
     res = (await session.execute(select(Gram20Ledger)
                                  .filter(Gram20Ledger.owner == address)
                                  .filter(Gram20Ledger.tick == tick)
-                                 .order_by(Gram20Ledger.lt.desc(), Gram20Ledger.hash.desc()))).first()
+                                 .order_by(Gram20Ledger.id.desc()))).first()
     # init empty state
     if not res:
         res = Gram20Ledger(

@@ -151,7 +151,7 @@ class Gram20LedgerUpdater:
                     except ExecutorException as e_e:
                         raise e_e
                     except Exception as p_e:
-                            logger.error(f"Failed to parse message {msg.hash} {p_e} {traceback.format_exc()}")
+                        logger.error(f"Failed to parse message {msg.hash} {p_e} {traceback.format_exc()}")
             logger.info(f"Got {len(all_actions)} actions to process")
 
             inserted_actions = 0
@@ -164,7 +164,7 @@ class Gram20LedgerUpdater:
                     except ProcessingFailed as failed:
                         await self.handle_rejection(conn, action.msg, failed, current_block_time)
             # next sort all actions:
-            all_actions = sorted(all_actions, key=lambda action: (action.lt, action.msg.hash))
+            all_actions = sorted(all_actions, key=lambda action: (action.lt, int.from_bytes(base64.b64decode(action.msg.hash), byteorder='big')))
             self.supply_updates = {}
             for action in all_actions:
                 logger.info(f"Applying action {action}")
