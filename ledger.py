@@ -346,7 +346,7 @@ class Gram20LedgerUpdater:
         transfer_out = (await conn.execute(insert(Gram20Ledger, [new_state_sender.as_dict()]).returning(Gram20Ledger.id))).first()
         new_state_sender.id = transfer_out[0]
         transfer_in = (await conn.execute(insert(Gram20Ledger, [new_state_recipient.as_dict()]).returning(Gram20Ledger.id))).first()
-        new_state_recipient = transfer_in[0]
+        new_state_recipient.id = transfer_in[0]
         for transfer in [new_state_sender, new_state_recipient]:
             try:
                 await self.handle_transfer_postprocessing(conn, transfer, seqno, current_block_time)
