@@ -34,6 +34,7 @@ GRAM20_PREFIX = """data:application/json,"""
 GRAM20_MASTER = os.getenv("GRAM20_MASTER")
 GRAM20_TOKEN_MASTER_CODE_HASH = os.getenv("GRAM20_TOKEN_MASTER_CODE_HASH")
 GRAM20_USER_CODE_HASH = os.getenv("GRAM20_USER_CODE_HASH")
+GRAM20_SALE_CONTRACT_CODE_HASH = os.getenv("GRAM20_SALE_CONTRACT_CODE_HASH")
 
 # Contact executor exception - should be treated as a problem
 class ExecutorException(Exception):
@@ -343,8 +344,10 @@ class Gram20LedgerUpdater:
             protocol_fee=0,
         )
         transfer_out = (await conn.execute(insert(Gram20Ledger, [new_state_sender.as_dict()]).returning(Gram20Ledger.id))).first()
+        new_state_sender.id = transfer_out[0]
         transfer_in = (await conn.execute(insert(Gram20Ledger, [new_state_recipient.as_dict()]).returning(Gram20Ledger.id))).first()
-        for transfer in [transfer_in, transfer_out]:
+        new_state_recipient = transfer_in[0]
+        for transfer in [new_state_sender, new_state_recipient]:
             try:
                 await self.handle_transfer_postprocessing(conn, transfer, seqno, current_block_time)
             except:
@@ -357,7 +360,31 @@ class Gram20LedgerUpdater:
 
         return True
 
-    async def handle_transfer_postprocessing(self, conn, transfer, seqno, current_block_time):
+    async def handle_transfer_postprocessing(self, conn, transfer: Gram20Ledger, seqno, current_block_time):
+        if transfer.delta > 0: # transfer to sale contract
+            src_acc = await get_account_info(conn, transfer.owner)
+            if src_acc:
+                if src_acc.code_hash == GRAM20_SALE_CONTRACT_CODE_HASH:
+                    logger.info(f"Detected transfer to our sale contract {transfer.owner}")
+                    if await get_sale(conn, transfer.owner):
+                        logger.warning("Sale contract already inited, ignoring")
+                        return
+
+                    data_cell = Cell.one_from_boc(base64.b64decode(src_acc.data)).begin_parse()
+                    created_at = data_cell.read_uint(32)
+                    seller_address = data_cell.read_msg_addr()
+                    token_amount = data_cell.read_uint(256)
+                    status = data_cell.read_uint(8)
+                    market_address = data_cell.read_msg_addr()
+                    market_fee_nominator = data_cell.read_uint(16)
+                    market_fee_denominator = data_cell.read_uint(16)
+                    price = data_cell.read_coins()
+                    tick = data_cell.read_uint(32)
+                    logger.info(f"Parsed from sale contact: crated_at={created_at}, seller_address={seller_address}, "
+                                f"tick={tick}, amount={token_amount}, price={price}, status={status}, "
+                                f"market_address={market_address}, fee={market_fee_nominator}/{market_fee_denominator}")
+        elif transfer.delta < 0: # transfer from sale contract - check it is exists
+            pass
         logger.info(f"Handling transfer post processing for {transfer}")
 
     async def check_premints(self, conn, seqno, block_ts):
