@@ -342,7 +342,13 @@ class Gram20LedgerUpdater:
             tx_fee=0,
             protocol_fee=0,
         )
-        await conn.execute(insert(Gram20Ledger, [new_state_sender.as_dict(), new_state_recipient.as_dict()]))
+        transfer_out = (await conn.execute(insert(Gram20Ledger, [new_state_sender.as_dict()]).returning(Gram20Ledger.id))).first()
+        transfer_in = (await conn.execute(insert(Gram20Ledger, [new_state_recipient.as_dict()]).returning(Gram20Ledger.id))).first()
+        for transfer in [transfer_in, transfer_out]:
+            try:
+                await self.handle_transfer_postprocessing(conn, transfer, seqno, current_block_time)
+            except:
+                logger.error(f"Failed to handle {transfer}: {traceback.format_exc()}")
 
         if new_state_recipient.balance > 0 and recipient_state.balance == 0: # +1 holder
             token_info = await get_gram20_token_by_tick(conn, action.tick)
@@ -350,6 +356,9 @@ class Gram20LedgerUpdater:
                                .values(total_holders=token_info.total_holders + 1))
 
         return True
+
+    async def handle_transfer_postprocessing(self, conn, transfer, seqno, current_block_time):
+        logger.info(f"Handling transfer post processing for {transfer}")
 
     async def check_premints(self, conn, seqno, block_ts):
         for token in (await get_gram20_tokens_for_premint_check(conn)):
