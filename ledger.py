@@ -434,6 +434,9 @@ class Gram20LedgerUpdater:
         #         unlock_ts = int(obj['unlock'])
 
         max_supply = int(obj['max'])
+        self.validate_condition(max_supply < 340282366920938463463374607431768211455, "tick_supply_too_large",
+                                f"Max supply is too large: {max_supply}")
+
         if block_time <= 1703872800:
             max_supply = max(4000000, max_supply)
         mint_limit = int(obj['limit'])
