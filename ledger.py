@@ -373,7 +373,7 @@ class Gram20LedgerUpdater:
                     data_cell = Cell.one_from_boc(base64.b64decode(src_acc.data)).begin_parse()
                     created_at = data_cell.read_uint(32)
                     seller_address = data_cell.read_msg_addr().to_string(1, 1, 1)
-                    token_amount = data_cell.read_uint(256)
+                    token_amount = data_cell.read_uint(128)
                     status = data_cell.read_uint(8)
                     market_address = data_cell.read_msg_addr().to_string(1, 1, 1)
                     market_fee_nominator = data_cell.read_uint(16)
