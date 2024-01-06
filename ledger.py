@@ -372,10 +372,10 @@ class Gram20LedgerUpdater:
 
                     data_cell = Cell.one_from_boc(base64.b64decode(src_acc.data)).begin_parse()
                     created_at = data_cell.read_uint(32)
-                    seller_address = data_cell.read_msg_addr()
+                    seller_address = data_cell.read_msg_addr().to_string(1, 1, 1)
                     token_amount = data_cell.read_uint(256)
                     status = data_cell.read_uint(8)
-                    market_address = data_cell.read_msg_addr()
+                    market_address = data_cell.read_msg_addr().to_string(1, 1, 1)
                     market_fee_nominator = data_cell.read_uint(16)
                     market_fee_denominator = data_cell.read_uint(16)
                     price = data_cell.read_coins()
@@ -396,6 +396,9 @@ class Gram20LedgerUpdater:
                         created_at=current_block_time,
                         closed_at=None,
                         status=0,
+                        market_address=market_address,
+                        market_fee_nominator=market_fee_nominator,
+                        market_fee_denominator=market_fee_denominator
                     )
                     await conn.execute(insert(Gram20Sale, [sale.as_dict()]))
 
