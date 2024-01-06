@@ -388,7 +388,7 @@ class Gram20LedgerUpdater:
                         address=transfer.owner,
                         seller=seller_address,
                         buyer=None,
-                        tick=tick.to_bytes(4).decode("utf-8"),
+                        tick=transfer.tick, # tick.to_bytes(4).decode("utf-8"), 
                         amount=token_amount,
                         price=price,
                         transfer_in=transfer.id,
