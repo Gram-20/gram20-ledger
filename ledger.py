@@ -383,9 +383,34 @@ class Gram20LedgerUpdater:
                     logger.info(f"Parsed from sale contact: crated_at={created_at}, seller_address={seller_address}, "
                                 f"tick={tick}, amount={token_amount}, price={price}, status={status}, "
                                 f"market_address={market_address}, fee={market_fee_nominator}/{market_fee_denominator}")
+                    # TODO validation
+                    sale = Gram20Sale(
+                        address=transfer.owner,
+                        seller=seller_address,
+                        buyer=None,
+                        tick=tick.to_bytes(4).decode("utf-8"),
+                        amount=token_amount,
+                        price=price,
+                        transfer_in=transfer.id,
+                        transfer_out=None,
+                        created_at=current_block_time,
+                        closed_at=None,
+                        status=0,
+                    )
+                    await conn.execute(insert(Gram20Sale, [sale.as_dict()]))
+
         elif transfer.delta < 0: # transfer from sale contract - check it is exists
-            pass
-        logger.info(f"Handling transfer post processing for {transfer}")
+            sale = await get_sale(conn, transfer.owner)
+            if not sale:
+                logger.warning(f"Sale contract not found for {transfer.owner}")
+                return
+            logger.info(f"Handling transfer from sale contract {sale.address}")
+            await conn.execute(update(Gram20Sale).where(Gram20Sale.id == sale.id).values(
+                buyer=transfer.peer,
+                status=1 if transfer.peer != sale.seller else 2, # TODO - handle memo
+                transfer_out=transfer.id,
+                closed_at=current_block_time
+            ))
 
     async def check_premints(self, conn, seqno, block_ts):
         for token in (await get_gram20_tokens_for_premint_check(conn)):

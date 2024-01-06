@@ -62,7 +62,7 @@ async def get_gram20_tokens_for_premint_check(session):
     return res.all()
 
 
-async def get_sale(session, address):
+async def get_sale(session, address) -> Gram20Sale:
     res = (await session.execute(select(Gram20Sale).filter(Gram20Sale.address == address))).first()
     return res
 
