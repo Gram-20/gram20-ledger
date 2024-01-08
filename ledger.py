@@ -35,6 +35,7 @@ GRAM20_MASTER = os.getenv("GRAM20_MASTER")
 GRAM20_TOKEN_MASTER_CODE_HASH = os.getenv("GRAM20_TOKEN_MASTER_CODE_HASH")
 GRAM20_USER_CODE_HASH = os.getenv("GRAM20_USER_CODE_HASH")
 GRAM20_SALE_CONTRACT_CODE_HASH = os.getenv("GRAM20_SALE_CONTRACT_CODE_HASH")
+GRAM20_SALE_CONTRACT_MARKETPLACE = os.getenv("GRAM20_SALE_CONTRACT_MARKETPLACE")
 
 # Contact executor exception - should be treated as a problem
 class ExecutorException(Exception):
@@ -81,6 +82,10 @@ class Gram20LedgerUpdater:
 
             self.token_master_code = await get_code(conn, GRAM20_TOKEN_MASTER_CODE_HASH)
             assert self.token_master_code is not None
+
+            self.sale_contract_code = await get_code(conn, GRAM20_SALE_CONTRACT_CODE_HASH)
+            assert self.sale_contract_code is not None
+
             logger.info("Smart contract codes have been initialized")
 
     async def _execute(self, code, data, method, types, address=None, arguments=[]):
@@ -350,6 +355,8 @@ class Gram20LedgerUpdater:
         for transfer in [new_state_sender, new_state_recipient]:
             try:
                 await self.handle_transfer_postprocessing(conn, transfer, seqno, current_block_time)
+            except ProcessingFailed as failed:
+                await self.handle_rejection(conn, action.msg, failed, current_block_time)
             except:
                 logger.error(f"Failed to handle {transfer}: {traceback.format_exc()}")
 
@@ -384,6 +391,40 @@ class Gram20LedgerUpdater:
                                 f"tick={tick}, amount={token_amount}, price={price}, status={status}, "
                                 f"market_address={market_address}, fee={market_fee_nominator}/{market_fee_denominator}")
                     # TODO validation
+                    self.validate_condition(status == 0, "sale_wrong_status",
+                                            f"Sale contract {transfer.owner} inited with wrong status {status}")
+                    self.validate_condition(transfer.peer == seller_address, "sale_wrong_transfer_peer",
+                                            f"Sale contract {transfer.owner} inited by {seller_address} but got transfer from {transfer.peer}")
+                    tick = tick.to_bytes(4, byteorder="big").decode("utf-8")
+                    self.validate_condition(transfer.tick == tick, "sale_wrong_tick",
+                                            f"Sale contract {transfer.owner} inited with {tick} but transfer for {transfer.tick}")
+                    self.validate_condition(transfer.delta >= token_amount, "sale_wrong_amount",
+                                            f"Sale contract {transfer.owner} inited with {token_amount} {tick} but "
+                                            f"transfer for {transfer.delta} {transfer.tick}")
+                    # self.validate_condition(market_address == GRAM20_SALE_CONTRACT_MARKETPLACE, "sale_wrong_market_address",
+                    #                         f"Sale contract with unsupported market address {market_address}")
+                    # TODO - fee percent
+                    _, _, _, _, _, _, _, _, _, _, _, user_sc_address = await self._execute(code=self.sale_contract_code, data=src_acc.data,
+                                                     address=transfer.owner,
+                                                     method='get_token_sale_data',
+                                                     types=['int', 'int', 'address', 'int', 'int', 'address', 'int',
+                                                            'int', 'int', 'string', 'cell_hash', 'address'], arguments=[])
+
+                    token_info = await get_gram20_token_by_tick(conn, transfer.tick)
+
+                    _, real_wallet_address = await self._execute(code=self.token_master_code, address=token_info.address,
+                                                                 data=token_info.data, method='get_user_data', types=['address', 'address'], arguments=[transfer.owner])
+                    logger.info(f"Got user address for {transfer.owner}: {real_wallet_address}, reported by sale: {user_sc_address}")
+                    self.validate_condition(real_wallet_address == user_sc_address, "sale_wrong_user_sc",
+                                            f"Sale contract {transfer.owner} reported wrong user sc address: {user_sc_address}, it must be {real_wallet_address}")
+
+                    transfer_payload = await self._execute(code=self.sale_contract_code, data=src_acc.data,
+                                                                                           address=transfer.owner,
+                                                                                           method='get_transfer_payload',
+                                                                                           types=['string'], arguments=[1, 0])
+                    logger.info(f"Transfer payload returned by sale contract: {transfer_payload}")
+                    # TODO validate
+
                     sale = Gram20Sale(
                         address=transfer.owner,
                         seller=seller_address,
@@ -411,7 +452,7 @@ class Gram20LedgerUpdater:
             logger.info(f"Handling transfer from sale contract {sale.address}")
             await conn.execute(update(Gram20Sale).where(Gram20Sale.id == sale.id).values(
                 buyer=transfer.peer,
-                status=1 if transfer.peer != sale.seller else 2, # TODO - handle memo
+                status=2 if transfer.comment == 'cancel' else 1,
                 transfer_out=transfer.id,
                 closed_at=current_block_time
             ))
