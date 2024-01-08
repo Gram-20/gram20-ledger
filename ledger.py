@@ -422,8 +422,20 @@ class Gram20LedgerUpdater:
                                                                                            address=transfer.owner,
                                                                                            method='get_transfer_payload',
                                                                                            types=['boc'], arguments=[1, 0])
-                    logger.info(f"Transfer payload returned by sale contract: {transfer_payload}")
-                    # TODO validate
+                    cell = Cell.one_from_boc(base64.b64decode(transfer_payload)).begin_parse()
+                    cell.skip_bits(32)
+                    payload = ""
+                    while not cell.is_empty():
+                        payload += cell.read_string(int(len(cell) / 8))
+                        if len(cell.refs) > 0:
+                            cell = cell.refs.pop(0).begin_parse()
+                        else:
+                            break
+                    logger.info(f"Transfer payload returned by sale contract: {payload}")
+                    expected = """data:application/json,{"p":"gram-20","op":"transfer","tick":"%s","to":"EQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAd99","amt":"%s"}""" % (transfer.tick, token_amount)
+                    self.validate_condition(payload == expected, "sale_wrong_transfer_payload",
+                                            f"Sale contract {transfer.owner} reported wrong transfer payload: {payload}, expected: {expected}")
+
 
                     sale = Gram20Sale(
                         address=transfer.owner,
