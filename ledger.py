@@ -421,7 +421,7 @@ class Gram20LedgerUpdater:
                     transfer_payload = await self._execute(code=self.sale_contract_code, data=src_acc.data,
                                                                                            address=transfer.owner,
                                                                                            method='get_transfer_payload',
-                                                                                           types=['string'], arguments=[1, 0])
+                                                                                           types=['boc'], arguments=[1, 0])
                     logger.info(f"Transfer payload returned by sale contract: {transfer_payload}")
                     # TODO validate
 
