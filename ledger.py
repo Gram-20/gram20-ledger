@@ -418,7 +418,7 @@ class Gram20LedgerUpdater:
                     self.validate_condition(real_wallet_address == user_sc_address, "sale_wrong_user_sc",
                                             f"Sale contract {transfer.owner} reported wrong user sc address: {user_sc_address}, it must be {real_wallet_address}")
 
-                    transfer_payload = await self._execute(code=self.sale_contract_code, data=src_acc.data,
+                    transfer_payload, = await self._execute(code=self.sale_contract_code, data=src_acc.data,
                                                                                            address=transfer.owner,
                                                                                            method='get_transfer_payload',
                                                                                            types=['boc'], arguments=[1, 0])
