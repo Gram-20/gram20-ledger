@@ -1,6 +1,6 @@
 
 from sqlalchemy.future import select
-from sqlalchemy import insert, update
+from sqlalchemy import insert, update, text
 from sqlalchemy.orm import contains_eager
 from indexer.database import *
 from time import time
@@ -79,4 +79,29 @@ async def get_last_state(session, address, tick):
             tick=tick,
             balance=0
         )
+    return res
+
+async def get_missing_contracts(session, code_hash):
+    res = await session.execute(text("""
+                with x as (
+                select  distinct a.address  from current_balances cb 
+                join accounts a on a.address  = cb."owner" 
+                where cb.balance  > 0 and a.code_hash = '%s'
+                ), delta as (
+                select  * from x
+                except select distinct gs.address from gram20_sale gs 
+                ) 
+                select delta.address from delta
+                join current_balances cb on cb."owner"  = delta.address
+                where cb.balance > 23
+            """ % code_hash))
+    return res
+
+
+async def get_transfer_to(session, address) -> Gram20Ledger:
+    res = (await session.execute(select(Gram20Ledger)\
+                                 .filter(Gram20Ledger.owner == address) \
+                                 .filter(Gram20Ledger.action == Gram20Ledger.ACTION_TYPE_TRANSFER) \
+                                 .filter(Gram20Ledger.delta > 0) \
+                                 )).all()
     return res

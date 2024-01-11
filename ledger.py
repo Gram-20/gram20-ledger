@@ -4,6 +4,7 @@ import asyncio
 import math
 import os
 import base64
+import sys
 
 from loguru import logger
 from tonsdk.utils import Address, bytes_to_b64str
@@ -36,6 +37,7 @@ GRAM20_TOKEN_MASTER_CODE_HASH = os.getenv("GRAM20_TOKEN_MASTER_CODE_HASH")
 GRAM20_USER_CODE_HASH = os.getenv("GRAM20_USER_CODE_HASH")
 GRAM20_SALE_CONTRACT_CODE_HASH = os.getenv("GRAM20_SALE_CONTRACT_CODE_HASH")
 GRAM20_SALE_CONTRACT_MARKETPLACE = os.getenv("GRAM20_SALE_CONTRACT_MARKETPLACE")
+GRAM20_SALE_CHECK_INTERVAL = int(os.getenv("GRAM20_SALE_CHECK_INTERVAL", '300'))
 
 # Contact executor exception - should be treated as a problem
 class ExecutorException(Exception):
@@ -63,6 +65,7 @@ VALID_BASIC_WALLETS = set([
 class Gram20LedgerUpdater:
     def __init__(self, executor_url):
         self.executor_url = executor_url
+        self.last_check_time = None
 
     async def init(self):
         await init_database(False)
@@ -109,6 +112,10 @@ class Gram20LedgerUpdater:
             try:
                 if await self.processig_iteration() < 5:
                     await asyncio.sleep(3)
+                if self.last_check_time is None or time() - self.last_check_time > GRAM20_SALE_CHECK_INTERVAL:
+                    logger.warning("Running sales contract check")
+                    await self.fix_missing_sales()
+                    self.last_check_time = int(time())
             except Exception as e:
                 logger.error(f"Failed to process ledger iteration: {e} {traceback.format_exc()}")
 
@@ -401,9 +408,9 @@ class Gram20LedgerUpdater:
                     self.validate_condition(transfer.delta >= token_amount, "sale_wrong_amount",
                                             f"Sale contract {transfer.owner} inited with {token_amount} {tick} but "
                                             f"transfer for {transfer.delta} {transfer.tick}")
-                    # self.validate_condition(market_address == GRAM20_SALE_CONTRACT_MARKETPLACE, "sale_wrong_market_address",
-                    #                         f"Sale contract with unsupported market address {market_address}")
-                    # TODO - fee percent
+                    self.validate_condition(market_address == GRAM20_SALE_CONTRACT_MARKETPLACE, "sale_wrong_market_address",
+                                            f"Sale contract with unsupported market address {market_address}")
+                    self.validate_condition(market_fee_nominator== 199 and market_fee_denominator==10000, "wrong_fee_percent", f"wrong fee percent: ${market_fee_nominator}/${market_fee_denominator}")
                     _, _, _, _, _, _, _, _, _, _, _, user_sc_address = await self._execute(code=self.sale_contract_code, data=src_acc.data,
                                                      address=transfer.owner,
                                                      method='get_token_sale_data',
@@ -649,6 +656,30 @@ class Gram20LedgerUpdater:
         await self.init()
         await self.start_processing()
 
+    async def fix_missing_sales(self):
+        await self.init()
+        logger.info("Detecting possible missing contracts")
+        async with engine.begin() as conn:
+            res = await get_missing_contracts(conn, GRAM20_SALE_CONTRACT_CODE_HASH)
+            for row in res:
+                address = row[0]
+                logger.info(f"Trying to recover sale contract {address}")
+                transfers_to = await get_transfer_to(conn, address)
+                # logger.info(f"Got {len(transfers_to)} transfers to address")
+                if len(transfers_to) != 1:
+                    logger.warning(f"Transfers count is not 1: {len(transfers_to)}")
+                    continue
+                transfer = transfers_to[0]
+                try:
+                    await self.handle_transfer_postprocessing(conn, transfer, None, transfer.utime)
+                except Exception as e:
+                    logger.error(f"Failed to process sale: {e} {traceback.format_exc()}")
+
+
 if __name__ == "__main__":
     ledger = Gram20LedgerUpdater(executor_url=os.getenv("EXECUTOR_URL", "http://localhost:9090/execute"))
-    asyncio.run(ledger.run())
+
+    if len(sys.argv) > 0 and sys.argv[0] == "fix_sales":
+        asyncio.run(ledger.fix_missing_sales())
+    else:
+        asyncio.run(ledger.run())
