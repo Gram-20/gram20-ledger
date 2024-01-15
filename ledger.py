@@ -560,6 +560,16 @@ class Gram20LedgerUpdater:
             if max_supply / mint_limit < 4000000:
                 mint_limit = math.ceil(max_supply / 4000000.0)
 
+        # parse raw data from root token
+        data_cell = Cell.one_from_boc(base64.b64decode(acc_state.data))
+        mint_data = data_cell.refs[2].begin_parse()
+        mint_data.read_uint(32) # start
+        mint_data.read_uint(32) # interval
+        mint_data.read_uint(32) # penalty
+        mint_data.read_msg_addr() # creator_address
+        mint_data.read_uint(256) # public_key
+        protocol_fee = mint_data.read_coins() # storage::protocol_fee
+        royalty_address = mint_data.read_msg_addr()
 
         token = Gram20Token(
             msg_id=action.msg.msg_id,
@@ -580,7 +590,9 @@ class Gram20LedgerUpdater:
             mint_start=int(obj['start']),
             interval=int(obj['interval']),
             penalty=int(obj['penalty']),
-            preminted=lock_type == 'none'
+            preminted=lock_type == 'none',
+            royalty_address=royalty_address,
+            protocol_fee=protocol_fee
         )
         logger.info(f"Saving new token {token}")
         await conn.execute(self.gram20_token_t.insert(), [token.as_dict()])
