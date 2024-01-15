@@ -569,7 +569,7 @@ class Gram20LedgerUpdater:
         mint_data.read_msg_addr() # creator_address
         mint_data.read_uint(256) # public_key
         protocol_fee = mint_data.read_coins() # storage::protocol_fee
-        royalty_address = mint_data.read_msg_addr()
+        royalty_address = mint_data.read_msg_addr().to_string(1, 1, 1)
 
         token = Gram20Token(
             msg_id=action.msg.msg_id,
