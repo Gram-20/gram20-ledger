@@ -467,6 +467,10 @@ class Gram20LedgerUpdater:
                         market_fee_denominator=market_fee_denominator
                     )
                     await conn.execute(insert(Gram20Sale, [sale.as_dict()]))
+                    await conn.execute(update(Gram20Balances)
+                                       .where(Gram20Balances.owner == transfer.owner)
+                                       .where(Gram20Balances.tick == transfer.tick)
+                                       .values(is_sale=True))
 
         elif transfer.delta < 0: # transfer from sale contract - check it is exists
             sale = await get_sale(conn, transfer.owner)
