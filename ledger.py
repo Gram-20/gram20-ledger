@@ -225,7 +225,7 @@ class Gram20LedgerUpdater:
                 })
             await conn.execute(insert(Gram20SupplyHistory).values(updates))
 
-    def update_ledger_state(self, conn, state: Gram20Ledger):
+    async def update_ledger_state(self, conn, state: Gram20Ledger):
         state_id = (await conn.execute(insert(Gram20Ledger, [state.as_dict()]).returning(Gram20Ledger.id))).first()
         await update_balance(conn, state.owner, state.tick, state.balance, state_id)
         return state_id
