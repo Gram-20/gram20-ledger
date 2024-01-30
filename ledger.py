@@ -473,7 +473,7 @@ class Gram20LedgerUpdater:
                                        .values(is_sale=True))
 
                     await conn.execute(update(Gram20Token).where(Gram20Token.id == token_info.id)
-                                       .values(sale_contracts=token_info.sale_contracts + 1))
+                                       .values(active_sale_contracts=token_info.active_sale_contracts + 1))
 
         elif transfer.delta < 0: # transfer from sale contract - check it is exists
             sale = await get_sale(conn, transfer.owner)
@@ -487,6 +487,10 @@ class Gram20LedgerUpdater:
                 transfer_out=transfer.id,
                 closed_at=current_block_time
             ))
+
+            token_info = await get_gram20_token_by_tick(conn, transfer.tick)
+            await conn.execute(update(Gram20Token).where(Gram20Token.id == token_info.id)
+                               .values(active_sale_contracts=token_info.active_sale_contracts - 1))
 
     async def check_premints(self, conn, seqno, block_ts):
         for token in (await get_gram20_tokens_for_premint_check(conn)):
