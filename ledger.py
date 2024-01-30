@@ -472,6 +472,9 @@ class Gram20LedgerUpdater:
                                        .where(Gram20Balances.tick == transfer.tick)
                                        .values(is_sale=True))
 
+                    await conn.execute(update(Gram20Token).where(Gram20Token.id == token_info.id)
+                                       .values(sale_contracts=token_info.sale_contracts + 1))
+
         elif transfer.delta < 0: # transfer from sale contract - check it is exists
             sale = await get_sale(conn, transfer.owner)
             if not sale:
