@@ -599,6 +599,7 @@ class Gram20LedgerUpdater:
             max_supply=max_supply,
             supply=0, #, int(obj['premint']),
             total_holders=0,
+            active_sale_contracts=0,
             mint_limit=mint_limit,
             premint=0, #int(obj['premint']),
             lock_type=lock_type,
