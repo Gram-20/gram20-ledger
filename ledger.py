@@ -226,7 +226,7 @@ class Gram20LedgerUpdater:
             await conn.execute(insert(Gram20SupplyHistory).values(updates))
 
     async def update_ledger_state(self, conn, state: Gram20Ledger):
-        state_id = (await conn.execute(insert(Gram20Ledger, [state.as_dict()]).returning(Gram20Ledger.id))).first()
+        state_id = (await conn.execute(insert(Gram20Ledger, [state.as_dict()]).returning(Gram20Ledger.id))).first()[0]
         await update_balance(conn, state.owner, state.tick, state.balance, state_id)
         return state_id
 
@@ -361,9 +361,9 @@ class Gram20LedgerUpdater:
             protocol_fee=0,
         )
         transfer_out = await self.update_ledger_state(conn, new_state_sender)
-        new_state_sender.id = transfer_out[0]
+        new_state_sender.id = transfer_out
         transfer_in = await self.update_ledger_state(conn, new_state_recipient)
-        new_state_recipient.id = transfer_in[0]
+        new_state_recipient.id = transfer_in
         for transfer in [new_state_sender, new_state_recipient]:
             try:
                 await self.handle_transfer_postprocessing(conn, transfer, seqno, current_block_time)
