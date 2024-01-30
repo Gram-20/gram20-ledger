@@ -1,6 +1,7 @@
 
 from sqlalchemy.future import select
 from sqlalchemy import insert, update, text
+from sqlalchemy.dialects.postgresql import insert as insert_pg
 from sqlalchemy.orm import contains_eager
 from indexer.database import *
 from time import time
@@ -105,3 +106,14 @@ async def get_transfer_to(session, address) -> Gram20Ledger:
                                  .filter(Gram20Ledger.delta > 0) \
                                  )).all()
     return res
+
+async def update_balance(session, owner, tick, balance, state_id):
+    await session.execute(insert_pg(Gram20Balances).values(
+        state_id=state_id,
+        owner=owner,
+        tick=tick,
+        balance=balance
+    ).on_conflict_do_update(
+        constraint='gram20_balances_owner_tick',
+        set_=dict(balance=balance, state_id=state_id)
+    ))

@@ -225,6 +225,11 @@ class Gram20LedgerUpdater:
                 })
             await conn.execute(insert(Gram20SupplyHistory).values(updates))
 
+    def update_ledger_state(self, conn, state: Gram20Ledger):
+        state_id = (await conn.execute(insert(Gram20Ledger, [state.as_dict()]).returning(Gram20Ledger.id))).first()
+        await update_balance(conn, state.owner, state.tick, state.balance, state_id)
+        return state_id
+
     async def apply_mint(self, conn, action, seqno, block_time):
         assert action.op == 'mint'
         minter = action.source
@@ -270,7 +275,7 @@ class Gram20LedgerUpdater:
             tx_fee=action.msg.fee,
             protocol_fee=action.msg.value - action.msg.fee
         )
-        await conn.execute(insert(Gram20Ledger, [new_state.as_dict()]))
+        await self.update_ledger_state(conn, new_state)
         new_supply = token_info.supply + amount
         await conn.execute(update(Gram20Token).where(Gram20Token.id == token_info.id).values(supply=new_supply))
         if new_state.balance > 0 and state.balance == 0: # new holder
@@ -355,9 +360,9 @@ class Gram20LedgerUpdater:
             tx_fee=0,
             protocol_fee=0,
         )
-        transfer_out = (await conn.execute(insert(Gram20Ledger, [new_state_sender.as_dict()]).returning(Gram20Ledger.id))).first()
+        transfer_out = await self.update_ledger_state(conn, new_state_sender)
         new_state_sender.id = transfer_out[0]
-        transfer_in = (await conn.execute(insert(Gram20Ledger, [new_state_recipient.as_dict()]).returning(Gram20Ledger.id))).first()
+        transfer_in = await self.update_ledger_state(conn, new_state_recipient)
         new_state_recipient.id = transfer_in[0]
         for transfer in [new_state_sender, new_state_recipient]:
             try:
@@ -505,7 +510,7 @@ class Gram20LedgerUpdater:
                     protocol_fee=0,
                     tx_fee=0
                 )
-                await conn.execute(insert(Gram20Ledger, [new_state_recipient.as_dict()]))
+                await self.update_ledger_state(conn, new_state_recipient)
                 # TODO handle total holders
                 await conn.execute(update(Gram20Token).where(Gram20Token.id == token.id).values(preminted=True))
 
