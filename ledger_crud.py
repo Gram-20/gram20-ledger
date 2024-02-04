@@ -85,7 +85,7 @@ async def get_last_state(session, address, tick):
 async def get_missing_contracts(session, code_hash):
     res = await session.execute(text("""
                 with x as (
-                select  distinct a.address  from current_balances cb 
+                select  distinct a.address  from gram20_balances cb 
                 join accounts a on a.address  = cb."owner" 
                 where cb.balance  > 0 and a.code_hash = '%s'
                 ), delta as (
@@ -93,7 +93,7 @@ async def get_missing_contracts(session, code_hash):
                 except select distinct gs.address from gram20_sale gs 
                 ) 
                 select delta.address from delta
-                join current_balances cb on cb."owner"  = delta.address
+                join gram20_balances cb on cb."owner"  = delta.address
                 where cb.balance > 23
             """ % code_hash))
     return res
