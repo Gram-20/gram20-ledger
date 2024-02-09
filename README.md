@@ -5,7 +5,25 @@ Ledger is a special tool to calculate wallet balances for
 
 ## Architecture
 
-TODO
+Ledger is a single thread process which processes
+sequentially TON blocks produced by [ton-base-indexer](https://github.com/Gram-20/ton-base-indexer).
+Each block processing includes applying all actions 
+related to the Gram-20 protocol to the ledger. Ledger process interacts
+with [contracts-executor](https://github.com/shuva10v/contracts-executor)
+microservice to execute get methods on stored account states.  
+
+![ledger architecture](./Ledger%20architecture.png)
+
+Ledger maintain consistent view of the Gram-20 balances in the DB using following tables:
+* gram20_token - list of the tokens (ticks)
+* gram20_ledger - main table with all balances deltas. Each action
+  (mint or transfer) produces entry in this table. Every entry has 
+a link to previous state (if any).
+* gram20_balances - latest balances
+* gram20_processing - processing log, also stores a checkpoint for
+the last processed block seqno
+* gram20_rejections - log with messages rejected by the protocol
+* gram20_wallet - cached mapping between wallets and user token addresses
 
 ## Deployment
 
