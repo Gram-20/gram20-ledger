@@ -22,14 +22,7 @@ from loguru import logger
 
 # init database
 def get_engine(database):
-    if "PGCONNECTION_URL" in environ:
-        connection_url = environ["PGCONNECTION_URL"]
-    else:
-        connection_url = 'postgresql+asyncpg://{user}:{db_password}@{host}:{port}/{dbname}'.format(host=S.postgres.host,
-                                                                                                   port=S.postgres.port,
-                                                                                                   user=S.postgres.user,
-                                                                                                   db_password=db_password,
-                                                                                                   dbname=database)
+    connection_url = environ["PGCONNECTION_URL"]
     engine = create_async_engine(connection_url, pool_size=20, max_overflow=10, echo=False)
     return engine
 

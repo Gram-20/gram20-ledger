@@ -1,0 +1,23 @@
+version: '3.5'
+services:
+  ledger:
+    build:
+      context: ledger
+    restart: unless-stopped
+    environment:
+      EXECUTOR_URL: http://contracts-executor:9090/execute
+      GRAM20_MASTER: ${GRAM20_MASTER}
+      GRAM20_TOKEN_MASTER_CODE_HASH: ${GRAM20_TOKEN_MASTER_CODE_HASH}
+      GRAM20_USER_CODE_HASH: ${GRAM20_USER_CODE_HASH}
+      PGCONNECTION_URL: ${PGCONNECTION_URL}
+    depends_on:
+      - contracts-executor
+  contracts-executor:
+    build:
+      context: contracts-executor
+    restart: unless-stopped
+
+networks:
+  default:
+    external: true
+    name: indexer_net

@@ -35,10 +35,19 @@ git submodule update
 ````sh
 docker compose build
 ````
-3. Configure DB connection in ``.env``. DB connection
-must point to already inited DB from [ton-base-indexer](https://github.com/Gram-20/ton-base-indexer/).
+3. Prepare ``.env`` with configuration params:
+````sh
+PGCONNECTION_URL=postgresql+asyncpg://username:password@host/ton_index
+GRAM20_MASTER=EQBoPPFXQpGIiXQNkJ8DpQANN_OmMimp5dx6lWjRZmvEgZCI
+GRAM20_TOKEN_MASTER_CODE_HASH=0NMuF6+rWdiSPJrt5kG6gBnR2Whr8H+RIA+8rRPLHr4=
+GRAM20_USER_CODE_HASH=dyuAQbgsro6lYOVo/5b7Rx9HVvLiKYr7HpElGirGYi0=
+````
+DB connection url must point to already inited DB from [ton-base-indexer](https://github.com/Gram-20/ton-base-indexer/).
+``GRAM20_MASTER``, ``GRAM20_TOKEN_MASTER_CODE_HASH`` and 
+``GRAM20_USER_CODE_HASH`` are protocol constants.
+
 4. Download dump from [gramscan.org](https://gramscan.org/dumps)
-5Restore dump using [restore_dump.py](./restore_dump.py) (put you DB credentials to the comman below):
+5. Restore dump using [restore_dump.py](./restore_dump.py) (put you DB credentials to the comman below):
 ````sh
 pip3 install loguru psycopg2-binary
 PGHOST=localhost PGPASSWORD=password PGUSER=postgres PGDATABASE=ton_index \
@@ -47,4 +56,14 @@ PGHOST=localhost PGPASSWORD=password PGUSER=postgres PGDATABASE=ton_index \
 6. Run images:
 ````sh
 docker compose up -d
+````
+
+In case of successful run you will see logs like this:
+````sh
+gram20-ledger-ledger-1              | 2024-02-09 10:24:17.175 | INFO     | __main__:processig_iteration:120 - MC block 35970745 is not found
+gram20-ledger-ledger-1              | 2024-02-09 10:24:20.187 | INFO     | __main__:processig_iteration:115 - Got last processed seqno: 35970744
+gram20-ledger-ledger-1              | 2024-02-09 10:24:20.192 | INFO     | __main__:processig_iteration:122 - got block 35970745, generated at 32 s ago
+gram20-ledger-ledger-1              | 2024-02-09 10:24:20.194 | INFO     | __main__:processig_iteration:158 - Got 0 actions to process
+gram20-ledger-ledger-1              | 2024-02-09 10:24:20.201 | INFO     | __main__:processig_iteration:115 - Got last processed seqno: 35970745
+gram20-ledger-ledger-1              | 2024-02-09 10:24:20.202 | INFO     | __main__:processig_iteration:120 - MC block 35970746 is not found
 ````
