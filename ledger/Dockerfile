@@ -10,10 +10,10 @@ ADD deploy/requirements.txt /tmp/requirements.txt
 RUN python3 -m pip install -r /tmp/requirements.txt
 
 # app
-COPY . /usr/src/ton-indexer
-WORKDIR /usr/src/ton-indexer
+COPY . /app
+WORKDIR /app
 
-ENV PYTHONPATH "${PYTHONPATH}:/usr/src/ton-indexer"
+ENV PYTHONPATH "${PYTHONPATH}:/app"
 
 # entrypoint
-ENTRYPOINT ["python3", "ledger/ledger.py"]
+ENTRYPOINT ["python3", "ledger.py"]
