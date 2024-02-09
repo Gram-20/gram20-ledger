@@ -3,8 +3,11 @@ from sqlalchemy.future import select
 from sqlalchemy import insert, update, text
 from sqlalchemy.dialects.postgresql import insert as insert_pg
 from sqlalchemy.orm import contains_eager
-from indexer.database import *
+from database import *
 from time import time
+
+MASTERCHAIN_INDEX = -1
+MASTERCHAIN_SHARD = -9223372036854775808
 
 async def get_last_seqno(session):
     res = (await session.execute(select(Gram20ProcessingHistory)
@@ -56,17 +59,6 @@ async def get_gram20_token_by_tick(session, tick) -> Gram20Token:
     res = (await session.execute(select(Gram20Token).filter(Gram20Token.tick == tick))).first()
     return res
 
-async def get_gram20_tokens_for_premint_check(session):
-    res = await session.execute(select(Gram20Token)
-                                 .filter(Gram20Token.premint > 0)
-                                 .filter(Gram20Token.preminted == False))
-    return res.all()
-
-
-async def get_sale(session, address) -> Gram20Sale:
-    res = (await session.execute(select(Gram20Sale).filter(Gram20Sale.address == address))).first()
-    return res
-
 async def get_last_state(session, address, tick):
     res = (await session.execute(select(Gram20Ledger)
                                  .filter(Gram20Ledger.owner == address)
@@ -80,22 +72,6 @@ async def get_last_state(session, address, tick):
             tick=tick,
             balance=0
         )
-    return res
-
-async def get_missing_contracts(session, code_hash):
-    res = await session.execute(text("""
-                with x as (
-                select  distinct a.address  from gram20_balances cb 
-                join accounts a on a.address  = cb."owner" 
-                where cb.balance  > 0 and a.code_hash = '%s'
-                ), delta as (
-                select  * from x
-                except select distinct gs.address from gram20_sale gs 
-                ) 
-                select delta.address from delta
-                join gram20_balances cb on cb."owner"  = delta.address
-                where cb.balance > 23
-            """ % code_hash))
     return res
 
 
@@ -117,3 +93,14 @@ async def update_balance(session, owner, tick, balance, state_id):
         constraint='gram20_balances_owner_tick',
         set_=dict(balance=balance, state_id=state_id)
     ))
+
+async def get_messages_by_masterchain_seqno(session, masterchain_seqno: int):
+    mc_block = (await session.execute(select(Block).filter(and_(Block.workchain == MASTERCHAIN_INDEX, Block.shard == MASTERCHAIN_SHARD, Block.seqno == masterchain_seqno)))).first()
+    if mc_block is None:
+        raise Exception(MASTERCHAIN_INDEX, MASTERCHAIN_SHARD, masterchain_seqno)
+    query = select(Message, Transaction.lt, Transaction.utime, Transaction.fee).join(Transaction.in_msg) \
+        .join(Block, Block.block_id == Transaction.block_id) \
+        .filter(Block.masterchain_block_id == mc_block.block_id) \
+        .filter(Transaction.compute_exit_code == 0)
+
+    return (await session.execute(query)).all()

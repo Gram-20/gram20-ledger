@@ -10,8 +10,7 @@ from loguru import logger
 from tonsdk.utils import Address, bytes_to_b64str
 from tonsdk.boc import Cell
 
-from indexer.crud import get_messages_by_masterchain_seqno
-from indexer.database import init_database, engine
+from database import init_database, engine
 from ledger_crud import *
 import json
 import aiohttp
@@ -35,9 +34,6 @@ GRAM20_PREFIX = """data:application/json,"""
 GRAM20_MASTER = os.getenv("GRAM20_MASTER")
 GRAM20_TOKEN_MASTER_CODE_HASH = os.getenv("GRAM20_TOKEN_MASTER_CODE_HASH")
 GRAM20_USER_CODE_HASH = os.getenv("GRAM20_USER_CODE_HASH")
-GRAM20_SALE_CONTRACT_CODE_HASH = os.getenv("GRAM20_SALE_CONTRACT_CODE_HASH")
-GRAM20_SALE_CONTRACT_MARKETPLACE = os.getenv("GRAM20_SALE_CONTRACT_MARKETPLACE")
-GRAM20_SALE_CHECK_INTERVAL = int(os.getenv("GRAM20_SALE_CHECK_INTERVAL", '300'))
 
 # Contact executor exception - should be treated as a problem
 class ExecutorException(Exception):
@@ -68,13 +64,14 @@ class Gram20LedgerUpdater:
         self.last_check_time = None
 
     async def init(self):
-        await init_database(False)
+        await init_database(True)
         meta = Base.metadata
         self.gram20_wallets_t = meta.tables[Gram20Wallet.__tablename__]
         self.gram20_token_t = meta.tables[Gram20Token.__tablename__]
         async with engine.begin() as conn:
             logger.info("Initializing smart contracts codes")
             master_state = await get_account_info(conn, GRAM20_MASTER)
+            assert master_state is not None, f"GRAM20_MASTER not found: {GRAM20_MASTER}"
             self.master_data = master_state.data
             assert self.master_data is not None
 
@@ -85,9 +82,6 @@ class Gram20LedgerUpdater:
 
             self.token_master_code = await get_code(conn, GRAM20_TOKEN_MASTER_CODE_HASH)
             assert self.token_master_code is not None
-
-            self.sale_contract_code = await get_code(conn, GRAM20_SALE_CONTRACT_CODE_HASH)
-            assert self.sale_contract_code is not None
 
             logger.info("Smart contract codes have been initialized")
 
@@ -112,10 +106,6 @@ class Gram20LedgerUpdater:
             try:
                 if await self.processig_iteration() < 5:
                     await asyncio.sleep(3)
-                if self.last_check_time is None or time() - self.last_check_time > GRAM20_SALE_CHECK_INTERVAL:
-                    logger.warning("Running sales contract check")
-                    await self.fix_missing_sales()
-                    self.last_check_time = int(time())
             except Exception as e:
                 logger.error(f"Failed to process ledger iteration: {e} {traceback.format_exc()}")
 
@@ -193,7 +183,6 @@ class Gram20LedgerUpdater:
 
             await self.update_supply_history(conn, current_seqno, current_block_time)
 
-            # await self.check_premints(conn, current_seqno, current_block_time)
             await update_processing_history(conn, current_seqno, current_block_time, inserted_actions)
 
             await conn.commit() # finally commit all this stuff
@@ -271,16 +260,11 @@ class Gram20LedgerUpdater:
             tick=action.tick,
             balance=state.balance + amount,
             delta=amount,
-            action=Gram20Ledger.ACTION_TYPE_MINT,
-            tx_fee=action.msg.fee,
-            protocol_fee=action.msg.value - action.msg.fee
+            action=Gram20Ledger.ACTION_TYPE_MINT
         )
         await self.update_ledger_state(conn, new_state)
         new_supply = token_info.supply + amount
         await conn.execute(update(Gram20Token).where(Gram20Token.id == token_info.id).values(supply=new_supply))
-        if new_state.balance > 0 and state.balance == 0: # new holder
-            await conn.execute(update(Gram20Token).where(Gram20Token.id == token_info.id)
-                               .values(total_holders=token_info.total_holders + 1))
 
         self.supply_updates[action.tick] = new_supply # track supply per seqno for further actions
         return True
@@ -332,14 +316,7 @@ class Gram20LedgerUpdater:
             action=Gram20Ledger.ACTION_TYPE_TRANSFER,
             comment=memo,
             peer=recipient,
-            tx_fee=action.msg.fee,
-            protocol_fee=action.msg.value - action.msg.fee
         )
-
-        if new_state_sender.balance == 0 and state.balance > 0: # -1 holder
-            token_info = await get_gram20_token_by_tick(conn, action.tick)
-            await conn.execute(update(Gram20Token).where(Gram20Token.id == token_info.id)
-                               .values(total_holders=token_info.total_holders - 1))
 
         recipient_state = await self.get_last_state(conn, recipient, action.tick)
 
@@ -357,8 +334,6 @@ class Gram20LedgerUpdater:
             action=Gram20Ledger.ACTION_TYPE_TRANSFER,
             comment=memo,
             peer=sender,
-            tx_fee=0,
-            protocol_fee=0,
         )
         transfer_out = await self.update_ledger_state(conn, new_state_sender)
         new_state_sender.id = transfer_out
@@ -372,159 +347,11 @@ class Gram20LedgerUpdater:
             except:
                 logger.error(f"Failed to handle {transfer}: {traceback.format_exc()}")
 
-        if new_state_recipient.balance > 0 and recipient_state.balance == 0: # +1 holder
-            token_info = await get_gram20_token_by_tick(conn, action.tick)
-            await conn.execute(update(Gram20Token).where(Gram20Token.id == token_info.id)
-                               .values(total_holders=token_info.total_holders + 1))
-
         return True
 
     async def handle_transfer_postprocessing(self, conn, transfer: Gram20Ledger, seqno, current_block_time):
-        if transfer.delta > 0: # transfer to sale contract
-            src_acc = await get_account_info(conn, transfer.owner)
-            if src_acc:
-                if src_acc.code_hash == GRAM20_SALE_CONTRACT_CODE_HASH:
-                    logger.info(f"Detected transfer to our sale contract {transfer.owner}")
-                    if await get_sale(conn, transfer.owner):
-                        logger.warning("Sale contract already inited, ignoring")
-                        return
-
-                    data_cell = Cell.one_from_boc(base64.b64decode(src_acc.data)).begin_parse()
-                    created_at = data_cell.read_uint(32)
-                    seller_address = data_cell.read_msg_addr().to_string(1, 1, 1)
-                    token_amount = data_cell.read_uint(128)
-                    status = data_cell.read_uint(8)
-                    market_address = data_cell.read_msg_addr().to_string(1, 1, 1)
-                    market_fee_nominator = data_cell.read_uint(16)
-                    market_fee_denominator = data_cell.read_uint(16)
-                    price = data_cell.read_coins()
-                    tick = data_cell.read_uint(32)
-                    logger.info(f"Parsed from sale contact: crated_at={created_at}, seller_address={seller_address}, "
-                                f"tick={tick}, amount={token_amount}, price={price}, status={status}, "
-                                f"market_address={market_address}, fee={market_fee_nominator}/{market_fee_denominator}")
-                    # TODO validation
-                    self.validate_condition(status == 0, "sale_wrong_status",
-                                            f"Sale contract {transfer.owner} inited with wrong status {status}")
-                    self.validate_condition(transfer.peer == seller_address, "sale_wrong_transfer_peer",
-                                            f"Sale contract {transfer.owner} inited by {seller_address} but got transfer from {transfer.peer}")
-                    tick = tick.to_bytes(4, byteorder="big").decode("utf-8")
-                    self.validate_condition(transfer.tick == tick, "sale_wrong_tick",
-                                            f"Sale contract {transfer.owner} inited with {tick} but transfer for {transfer.tick}")
-                    self.validate_condition(transfer.delta >= token_amount, "sale_wrong_amount",
-                                            f"Sale contract {transfer.owner} inited with {token_amount} {tick} but "
-                                            f"transfer for {transfer.delta} {transfer.tick}")
-                    self.validate_condition(market_address == GRAM20_SALE_CONTRACT_MARKETPLACE, "sale_wrong_market_address",
-                                            f"Sale contract with unsupported market address {market_address}")
-                    self.validate_condition(market_fee_nominator== 199 and market_fee_denominator==10000, "wrong_fee_percent", f"wrong fee percent: ${market_fee_nominator}/${market_fee_denominator}")
-                    _, _, _, _, _, _, _, _, _, _, _, user_sc_address = await self._execute(code=self.sale_contract_code, data=src_acc.data,
-                                                     address=transfer.owner,
-                                                     method='get_token_sale_data',
-                                                     types=['int', 'int', 'address', 'int', 'int', 'address', 'int',
-                                                            'int', 'int', 'string', 'cell_hash', 'address'], arguments=[])
-
-                    token_info = await get_gram20_token_by_tick(conn, transfer.tick)
-
-                    _, real_wallet_address = await self._execute(code=self.token_master_code, address=token_info.address,
-                                                                 data=token_info.data, method='get_user_data', types=['address', 'address'], arguments=[transfer.owner])
-                    logger.info(f"Got user address for {transfer.owner}: {real_wallet_address}, reported by sale: {user_sc_address}")
-                    self.validate_condition(real_wallet_address == user_sc_address, "sale_wrong_user_sc",
-                                            f"Sale contract {transfer.owner} reported wrong user sc address: {user_sc_address}, it must be {real_wallet_address}")
-
-                    transfer_payload, = await self._execute(code=self.sale_contract_code, data=src_acc.data,
-                                                                                           address=transfer.owner,
-                                                                                           method='get_transfer_payload',
-                                                                                           types=['boc'], arguments=[1, 0])
-                    cell = Cell.one_from_boc(base64.b64decode(transfer_payload)).begin_parse()
-                    cell.skip_bits(32)
-                    payload = ""
-                    while not cell.is_empty():
-                        payload += cell.read_string(int(len(cell) / 8))
-                        if len(cell.refs) > 0:
-                            cell = cell.refs.pop(0).begin_parse()
-                        else:
-                            break
-                    logger.info(f"Transfer payload returned by sale contract: {payload}")
-                    expected = """data:application/json,{"p":"gram-20","op":"transfer","tick":"%s","to":"EQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAd99","amt":"%s"}""" % (transfer.tick, token_amount)
-                    self.validate_condition(payload == expected, "sale_wrong_transfer_payload",
-                                            f"Sale contract {transfer.owner} reported wrong transfer payload: {payload}, expected: {expected}")
-
-
-                    sale = Gram20Sale(
-                        address=transfer.owner,
-                        seller=seller_address,
-                        buyer=None,
-                        tick=transfer.tick, # tick.to_bytes(4).decode("utf-8"), 
-                        amount=token_amount,
-                        total_cost=price,
-                        price_per_unit=1.0 * price / token_amount,
-                        transfer_in=transfer.id,
-                        transfer_out=None,
-                        created_at=current_block_time,
-                        closed_at=None,
-                        status=0,
-                        market_address=market_address,
-                        market_fee_nominator=market_fee_nominator,
-                        market_fee_denominator=market_fee_denominator
-                    )
-                    await conn.execute(insert(Gram20Sale, [sale.as_dict()]))
-                    await conn.execute(update(Gram20Balances)
-                                       .where(Gram20Balances.owner == transfer.owner)
-                                       .where(Gram20Balances.tick == transfer.tick)
-                                       .values(is_sale=True))
-
-                    await conn.execute(update(Gram20Token).where(Gram20Token.id == token_info.id)
-                                       .values(active_sale_contracts=token_info.active_sale_contracts + 1))
-
-        elif transfer.delta < 0: # transfer from sale contract - check it is exists
-            sale = await get_sale(conn, transfer.owner)
-            if not sale:
-                logger.warning(f"Sale contract not found for {transfer.owner}")
-                return
-            logger.info(f"Handling transfer from sale contract {sale.address}")
-            await conn.execute(update(Gram20Sale).where(Gram20Sale.id == sale.id).values(
-                buyer=transfer.peer,
-                status=2 if transfer.comment == 'cancel' else 1,
-                transfer_out=transfer.id,
-                closed_at=current_block_time
-            ))
-
-            token_info = await get_gram20_token_by_tick(conn, transfer.tick)
-            await conn.execute(update(Gram20Token).where(Gram20Token.id == token_info.id)
-                               .values(active_sale_contracts=token_info.active_sale_contracts - 1))
-
-    async def check_premints(self, conn, seqno, block_ts):
-        for token in (await get_gram20_tokens_for_premint_check(conn)):
-            allowed = False
-            if token.lock_type == Gram20Token.UNLOCK_TYPE_FULL:
-                if token.supply >= token.max_supply:
-                    logger.info(f"max supply reached for {token.tick}, preminting {token.premint}")
-                    allowed = True
-            elif token.lock_type == Gram20Token.UNLOCK_TYPE_TIMESTAMP:
-                if block_ts >= token.unlock:
-                    logger.info(f"premint unlock time reached for {token.tick}, preminting {token.premint} {block_ts} >= {token.unlock}")
-                    allowed = True
-            if allowed:
-                recipient_state = await self.get_last_state(conn, token.owner, token.tick)
-
-                new_state_recipient = Gram20Ledger(
-                    prev_state=recipient_state.id,
-                    msg_id=token.msg_id,
-                    hash=token.hash, # the same as for deploy
-                    seqno=seqno,
-                    lt=token.created_lt if recipient_state.lt is None else recipient_state.lt + 1, # if we have lt from prev state, use lt+1, otherwise just lt of token deploy
-                    utime=block_ts,
-                    owner=token.owner,
-                    tick=token.tick,
-                    balance=recipient_state.balance + token.premint,
-                    delta=token.premint,
-                    action=Gram20Ledger.ACTION_TYPE_PREMINT,
-                    protocol_fee=0,
-                    tx_fee=0
-                )
-                await self.update_ledger_state(conn, new_state_recipient)
-                # TODO handle total holders
-                await conn.execute(update(Gram20Token).where(Gram20Token.id == token.id).values(preminted=True))
-
+        # Marketplace post-processing could be here
+        pass
 
     async def deploy_token(self, conn, action: Gram20Action, seqno, block_time):
         acc_state = await get_account_info(conn, action.destination)
@@ -554,16 +381,7 @@ class Gram20LedgerUpdater:
 
         _, _, _, token_owner = await self._execute(code=self.token_master_code, data=acc_state.data,
                                                 method='get_token_data', types=['int', 'int', 'int', 'address'], arguments=[])
-
-        lock_type = 'none'
-        unlock_ts = None
         obj = action.obj
-        # if obj['lock_type'] == 'unlock':
-        #     if obj['unlock'] == 'full':
-        #         lock_type = Gram20Token.UNLOCK_TYPE_FULL
-        #     else:
-        #         lock_type = Gram20Token.UNLOCK_TYPE_TIMESTAMP
-        #         unlock_ts = int(obj['unlock'])
 
         max_supply = int(obj['max'])
         self.validate_condition(max_supply < 340282366920938463463374607431768211455, "tick_supply_too_large",
@@ -584,8 +402,6 @@ class Gram20LedgerUpdater:
         mint_data.read_uint(32) # penalty
         mint_data.read_msg_addr() # creator_address
         mint_data.read_uint(256) # public_key
-        protocol_fee = mint_data.read_coins() # storage::protocol_fee
-        royalty_address = mint_data.read_msg_addr().to_string(1, 1, 1)
 
         token = Gram20Token(
             msg_id=action.msg.msg_id,
@@ -597,19 +413,11 @@ class Gram20LedgerUpdater:
             owner=token_owner,
             tick=tick,
             max_supply=max_supply,
-            supply=0, #, int(obj['premint']),
-            total_holders=0,
-            active_sale_contracts=0,
+            supply=0,
             mint_limit=mint_limit,
-            premint=0, #int(obj['premint']),
-            lock_type=lock_type,
-            unlock=unlock_ts,
             mint_start=int(obj['start']),
             interval=int(obj['interval']),
-            penalty=int(obj['penalty']),
-            preminted=lock_type == 'none',
-            royalty_address=royalty_address,
-            protocol_fee=protocol_fee
+            penalty=int(obj['penalty'])
         )
         logger.info(f"Saving new token {token}")
         await conn.execute(self.gram20_token_t.insert(), [token.as_dict()])
@@ -685,30 +493,6 @@ class Gram20LedgerUpdater:
         await self.init()
         await self.start_processing()
 
-    async def fix_missing_sales(self):
-        await self.init()
-        logger.info("Detecting possible missing contracts")
-        async with engine.begin() as conn:
-            res = await get_missing_contracts(conn, GRAM20_SALE_CONTRACT_CODE_HASH)
-            for row in res:
-                address = row[0]
-                logger.info(f"Trying to recover sale contract {address}")
-                transfers_to = await get_transfer_to(conn, address)
-                # logger.info(f"Got {len(transfers_to)} transfers to address")
-                if len(transfers_to) != 1:
-                    logger.warning(f"Transfers count is not 1: {len(transfers_to)}")
-                    continue
-                transfer = transfers_to[0]
-                try:
-                    await self.handle_transfer_postprocessing(conn, transfer, None, transfer.utime)
-                except Exception as e:
-                    logger.error(f"Failed to process sale: {e} {traceback.format_exc()}")
-
-
 if __name__ == "__main__":
     ledger = Gram20LedgerUpdater(executor_url=os.getenv("EXECUTOR_URL", "http://localhost:9090/execute"))
-
-    if len(sys.argv) > 0 and sys.argv[0] == "fix_sales":
-        asyncio.run(ledger.fix_missing_sales())
-    else:
-        asyncio.run(ledger.run())
+    asyncio.run(ledger.run())
